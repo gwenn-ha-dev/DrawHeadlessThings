@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/gwenn-ha-dev/DrawHeadlessThings/security/advisories/new
+    about: Report security issues privately — do not open a public issue. See SECURITY.md.
+  - name: Engine (draw-things-community) issues
+    url: https://github.com/drawthingsai/draw-things-community/issues
+    about: Bugs in the underlying diffusion engine, Metal kernels, or model catalog.

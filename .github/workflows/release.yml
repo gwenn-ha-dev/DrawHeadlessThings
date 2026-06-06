@@ -1,0 +1,88 @@
+name: Release
+
+# Tag a release as `vX.Y.Z` to trigger this workflow. The job builds
+# DHTServer.app (the menu-bar agent, with the dht-server REST + MCP engine
+# embedded inside it), packages it into a DMG via scripts/make-app.sh, and
+# attaches the DMG to the GitHub Release that GitHub auto-creates for the tag.
+#
+# The DMG is ad-hoc signed, NOT notarized (no paid Apple Developer account),
+# so first launch needs a one-time Gatekeeper bypass — see the release notes
+# body below.
+#
+# Apple Silicon only: the wrapped engine (draw-things-community) is Metal-based.
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve tag
+        id: meta
+        run: echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+
+      # The engine's ccv dependency uses CoreML symbols (MLMultiArrayDataTypeInt8)
+      # that only exist in the macOS 26 SDK. The runner default (Xcode 16.4 /
+      # macOS 15 SDK) can't compile it, so select Xcode 26.
+      - name: Select Xcode 26
+        run: sudo xcode-select -s /Applications/Xcode_26.3.app
+
+      - name: Set up sibling engine clone + apply patch
+        run: ./scripts/setup-dev.sh
+
+      - name: Run XCTest suite
+        run: swift test -c release
+
+      - name: Build DHTServer.app + DMG
+        run: ./scripts/make-app.sh
+
+      - name: Checksum the DMG
+        run: |
+          DMG="$(ls output/DHTServer-*.dmg | head -1)"
+          [ -n "$DMG" ] || { echo "no DMG produced"; exit 1; }
+          shasum -a 256 "$DMG" > "$DMG.sha256"
+          ls -la output/*.dmg*
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            output/DHTServer-*.dmg
+            output/DHTServer-*.dmg.sha256
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          body: |
+            ## DrawHeadlessThings ${{ steps.meta.outputs.tag }}
+
+            `DHTServer.app` — a menu-bar agent that runs the **dht-server**
+            REST + MCP engine (embedded inside the app). Apple Silicon (arm64).
+
+            ### Install
+
+            1. Download `DHTServer-*.dmg` below and open it.
+            2. Drag **DHTServer.app** into **Applications**.
+            3. First launch only — the app is signed ad-hoc, not notarized, so
+               Gatekeeper will block it. Right-click the app → **Open** (macOS 14),
+               or **System Settings → Privacy & Security → Open Anyway** (macOS 15+).
+               Or clear the quarantine flag from a terminal:
+               ```bash
+               xattr -dr com.apple.quarantine /Applications/DHTServer.app
+               ```
+
+            Point the app at your Draw Things models directory in **Settings**;
+            it serves on `localhost:7766` (REST at `/v1`, MCP at `/mcp`, docs at
+            `/docs`). Headless instead? Build `dht-server` from source — see the
+            [README](https://github.com/${{ github.repository }}/blob/${{ steps.meta.outputs.tag }}/README.md).

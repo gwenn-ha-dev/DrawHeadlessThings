@@ -1,0 +1,28 @@
+cff-version: 1.2.0
+message: >-
+  DrawHeadlessThings is a thin server wrapper. The hard part — the diffusion
+  engine, the Metal kernels, the model catalog — is the work of Liu Liu and the
+  Draw Things community. If you cite or build on this project, please also
+  credit the engine it stands on.
+title: DrawHeadlessThings
+abstract: >-
+  A headless macOS (Apple Silicon) server exposing the draw-things-community
+  image-generation engine as a stateless REST (OpenAPI 3.1) and MCP
+  (Model Context Protocol) API.
+type: software
+authors:
+  - name: gwenn-ha-dev
+license: GPL-3.0-or-later
+repository-code: https://github.com/gwenn-ha-dev/DrawHeadlessThings
+references:
+  - type: software
+    title: draw-things-community
+    abstract: >-
+      The image-generation engine that DrawHeadlessThings wraps — and to which
+      essentially all of the substance belongs.
+    authors:
+      - family-names: Liu
+        given-names: Liu
+        alias: liuliu
+    repository-code: https://github.com/drawthingsai/draw-things-community
+    license: GPL-3.0-only
