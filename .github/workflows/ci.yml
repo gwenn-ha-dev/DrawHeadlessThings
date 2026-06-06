@@ -1,0 +1,38 @@
+name: CI
+
+# Fast feedback on every push to main and every PR. Only runs the
+# offline parts of the suite (swift build + swift test). The smoke test
+# needs a real image base model installed, which a fresh runner can't
+# provide without an explicit download step, so it's skipped here.
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # The engine's ccv dependency uses CoreML symbols (MLMultiArrayDataTypeInt8)
+      # that only exist in the macOS 26 SDK. The runner default (Xcode 16.4 /
+      # macOS 15 SDK) can't compile it, so select Xcode 26.
+      - name: Select Xcode 26
+        run: sudo xcode-select -s /Applications/Xcode_26.3.app
+
+      - name: Set up sibling engine clone + apply patch
+        run: ./scripts/setup-dev.sh
+
+      - name: Build (debug)
+        run: swift build
+
+      - name: Run XCTest suite
+        run: swift test

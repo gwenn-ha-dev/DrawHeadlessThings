@@ -1,0 +1,86 @@
+DrawHeadlessThings
+Copyright (C) 2025-2026 gwenn-ha-dev and contributors
+
+This program is licensed under the GNU General Public License version 3
+or (at your option) any later version. See the LICENSE file for the full
+text.
+
+The DrawHeadlessThings binary is a combined work that statically links
+the following third-party software. Each component is distributed under
+its own license; this NOTICE acknowledges authorship and licensing.
+
+================================================================================
+Direct dependencies
+================================================================================
+
+draw-things-community
+  https://github.com/drawthingsai/draw-things-community
+  GNU General Public License v3.0
+  Copyright (c) Liu Liu and the draw-things-community contributors
+
+  This project consumes draw-things-community as a library via a local
+  sibling clone, pinned to commit 9f3f04b7a0729a50384caf58179bed592044d64d
+  and patched additively (see scripts/dtc-products.patch) to vend the
+  ModelZoo catalog as a library product. The patch does not modify, remove
+  or replace any upstream source — it only adds product declarations.
+
+  Because draw-things-community is GPL-3.0, the linked combined work
+  (the `dht-server` binary) is also distributed under GPL-3.0. This is
+  why DrawHeadlessThings itself is GPL-3.0 rather than a more permissive
+  license.
+
+s4nnc
+  https://github.com/liuliu/s4nnc
+  BSD 3-Clause License
+  Copyright (c) 2020, Liu Liu
+
+hummingbird
+  https://github.com/hummingbird-project/hummingbird
+  Apache License 2.0
+  Copyright the Hummingbird project authors
+
+================================================================================
+Transitive dependencies linked into the binary
+================================================================================
+
+Apache License 2.0:
+  - swift-nio, swift-nio-ssl, swift-nio-http2, swift-nio-extras,
+    swift-nio-transport-services                          (Apple Inc.)
+  - swift-log, swift-metrics, swift-collections,
+    swift-algorithms, swift-numerics, swift-atomics,
+    swift-system, swift-async-algorithms,
+    swift-argument-parser, swift-asn1, swift-certificates,
+    swift-crypto, swift-distributed-tracing,
+    swift-http-types, swift-http-structured-headers,
+    swift-protobuf, swift-service-context,
+    swift-service-lifecycle, swift-configuration         (Apple Inc.)
+  - async-http-client                                     (Apple Inc.)
+  - grpc-swift                                            (gRPC Authors)
+  - flatbuffers                                           (Google Inc.)
+  - swift-package-support-sentencepiece                   (Apple Inc.)
+
+BSD 3-Clause:
+  - dflat, swift-fickling, swift-sentencepiece            (Copyright (c) Liu Liu)
+  - swift-fpzip-support                                   (Lawrence Livermore National Security, LLC)
+
+Mozilla Public License 2.0:
+  - swift-png                                             (Kelvin Ma)
+
+MIT License:
+  - swift-log-datadog
+
+Each dependency's full license text is available in its source
+repository, and is reproduced verbatim inside its checkout under
+`.build/checkouts/<dep>/LICENSE*` after `swift build`.
+
+================================================================================
+Bundled assets
+================================================================================
+
+Swagger UI
+  https://github.com/swagger-api/swagger-ui
+  Apache License 2.0
+  Copyright SmartBear Software
+
+  Static assets bundled under `Sources/dht-server/Resources/swagger-ui/`
+  to render the OpenAPI spec at `/docs`.

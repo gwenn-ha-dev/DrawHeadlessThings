@@ -1,0 +1,33 @@
+diff --git a/Libraries/MediaGenerationKit/Sources/MediaGenerationPipeline.swift b/Libraries/MediaGenerationKit/Sources/MediaGenerationPipeline.swift
+index 8c743504..33397d71 100644
+--- a/Libraries/MediaGenerationKit/Sources/MediaGenerationPipeline.swift
++++ b/Libraries/MediaGenerationKit/Sources/MediaGenerationPipeline.swift
+@@ -634,6 +634,13 @@ public struct MediaGenerationPipeline: Sendable {
+       let data = try MediaGenerationImageCodec.encode(tensor, type: type)
+       try data.write(to: url, options: options)
+     }
++
++    /// Encodes the result image to an in-memory `Data` buffer. Added by the
++    /// DrawHeadlessThings dtc-products.patch so callers don't have to
++    /// roundtrip through a temporary file when they want bytes in memory.
++    public func encodedData(type: UTType) throws -> Data {
++      return try MediaGenerationImageCodec.encode(tensor, type: type)
++    }
+   }
+ 
+   internal final class Storage: @unchecked Sendable {
+diff --git a/Package.swift b/Package.swift
+index 6ae4c90b..08f2d88c 100644
+--- a/Package.swift
++++ b/Package.swift
+@@ -9,6 +9,10 @@ let package = Package(
+     .executable(name: "gRPCServerCLI", targets: ["gRPCServerCLI"]),
+     .executable(name: "draw-things-cli", targets: ["DrawThingsCLI"]),
+     .library(name: "_MediaGenerationKit", targets: ["_MediaGenerationKit"]),
++    // Added locally by DrawHeadlessThings — exposes typed asset catalogs
++    // (ModelZoo + LoRAZoo + ControlNetZoo + EverythingZoo + UpscalerZoo +
++    // TextualInversionZoo + TextGenerationZoo + DownloadZoo + ComputeUnits).
++    .library(name: "ModelZoo", targets: ["ModelZoo"]),
+   ],
+   dependencies: [
+     .package(

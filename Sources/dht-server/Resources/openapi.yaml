@@ -1,0 +1,2706 @@
+openapi: 3.1.0
+
+info:
+  title: DrawHeadlessThings API
+  version: 0.3.0
+  summary: REST API around a headless Draw Things engine (image + video)
+  description: |
+    Thin, stateless REST surface over the Draw Things diffusion engine
+    (linked in-process via the GPL-v3 `draw-things-community` core).
+    No gRPC. JSON + base64 throughout. SSE optional for streaming.
+
+    **Stateless** at the persistence layer: the server retains no run
+    history. Replay is the client's responsibility — every request
+    carries its full parameters and the response echoes them back along
+    with the effective seed.
+
+    **Transient state during a request**: an in-progress generation can
+    be cancelled if the client supplied a `run_id` in the request body.
+    `DELETE /v1/runs/{run_id}` aborts the run while it is alive, then the
+    entry is forgotten. On the **non-streaming** path a cancelled request
+    returns HTTP `499` (nginx-style "Client Closed Request", non-RFC;
+    chosen over `408` and `503` because it specifically denotes a
+    client-side abort of a still-valid request). On the **streaming**
+    path the HTTP status is already `200` once the stream opened, so a
+    cancellation surfaces as an `event: error` with
+    `error_code: RUN_CANCELLED` — not as HTTP 499.
+
+    The on-disk asset library is the only persisted state — it reflects
+    the filesystem of installed base models, LoRAs, ControlNets,
+    embeddings, upscalers and face-restoration models.
+
+    ## Getting started
+
+    Three semantic verbs — `compose`, `edit`, `restore` — keyed on
+    preservation level (input → output), plus a `pipeline` sugar for
+    ordered chains. The 6-endpoint surface (`/v1/txt2img`, `/v1/img2img`,
+    `/v1/inpaint`, `/v1/txt2vid`, `/v1/img2vid`, the old `/v1/edit`) was
+    rewritten in this release — they are gone.
+
+    A typical agent workflow, end to end:
+
+    1. **Discover** what can be installed —
+       `GET /v1/assets?downloaded=false&type=base_model` lists the full
+       base-model catalogue; the `downloaded: false` rows are the
+       installable ones.
+    2. **Install** a base model — `POST /v1/assets/install` with
+       `source.type=catalog` and `source.model` set to the chosen asset
+       `id` (optionally `?stream=true` for download progress).
+    3. **Inspect capabilities** — `GET /v1/capabilities/{model_id}` lists
+       every operation the model supports (with a per-Operation hand-written
+       `example` body the agent can copy and submit).
+    4. **Dry-run** (optional) — `POST /v1/resolve/compose` (or
+       `/v1/resolve/edit` / `/v1/resolve/restore`) validates the body,
+       surfaces `warnings` / `errors` and the defaults the engine would
+       fill in, without firing a diffusion run. The same `warnings` +
+       `applied_defaults` also come back in `RunMetadata` on every
+       generation response — resolve is opt-in, not a gate.
+    5. **Generate** — `POST /v1/compose` (image OR video, decided by the
+       model's domain), `/v1/edit` (preserve-and-change), `/v1/restore`
+       (preserve-and-enhance). Compose `from` is a *guide*, not a target —
+       omit for pure text2img, pass `{image: <b64>}` for img2img, nest a
+       sub-recipe with `{via: ..., ...}` to chain.
+    6. **Chain** — `POST /v1/pipeline` runs an ordered list of steps;
+       each step is a recipe and later steps reference earlier outputs by
+       `"$<as>"` in `from`. Stateless: no asset persists between calls.
+    7. **Stream / observe / cancel** (optional) — `?stream=true` for
+       per-step SSE progress; `GET /v1/runs` lists in-flight runs and
+       `GET /v1/runs/{id}` exposes a live preview frame; `DELETE
+       /v1/runs/{id}` cancels a run whose `run_id` you supplied in the
+       request body.
+
+    **`X-DHT-Recipe`**: every successful generation response carries an
+    `X-DHT-Recipe` header — base64-encoded JSON of the canonical recipe
+    that produced the bytes (the body you submitted, with `via` injected
+    and applied defaults folded into `params`). Inline image payloads
+    (`from.image`, `guides[].image`, `references[].image`,
+    `reference_image`, `depth_image`, `mask`) are replaced by
+    `sha256:<hex>;bytes=<n>` digest references so the header stays within
+    the HTTP header-line limit — re-attach the same image bytes, keyed by
+    digest, when re-posting. Commit it to git, store it next to the
+    output, send it back to `/v1/<verb>` — same bytes given the same
+    seed. Reproducibility on the side, no server state.
+  license:
+    name: GPL-3.0-only
+    url: https://www.gnu.org/licenses/gpl-3.0.html
+
+servers:
+  - url: http://localhost:7766
+    description: Default local bind (no auth)
+  - url: http://{host}:{port}
+    description: LAN bind (bearer token required)
+    variables:
+      host: { default: 0.0.0.0 }
+      port: { default: "7766" }
+
+security:
+  - {}             # no auth when bound to 127.0.0.1
+  - bearerAuth: [] # required as soon as bind != 127.0.0.1
+
+components:
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        Required only when the server is bound to a non-loopback interface.
+        Configure the token in the server config; the server refuses to
+        start in LAN mode without a configured token.
+
+  schemas:
+
+    # ───────────────────────────── Enums ─────────────────────────────
+
+    Domain:
+      type: string
+      description: Whether an asset / operation is image or video oriented.
+      enum: [image, video]
+
+    Architecture:
+      type: string
+      description: |
+        Base model architecture family. 1:1 mirror of the engine's
+        `ModelVersion` raw strings (the `Architecture` enum is generated
+        from it, so the wire values never diverge). Covers both image and
+        video architectures; `domain` disambiguates which is which.
+      enum:
+        - v1
+        - v2
+        - kandinsky2.1
+        - sdxl_base_v0.9
+        - sdxl_refiner_v0.9
+        - ssd_1b
+        - svd_i2v
+        - wurstchen_v3.0_stage_c
+        - wurstchen_v3.0_stage_b
+        - sd3
+        - pixart
+        - auraflow
+        - flux1
+        - sd3_large
+        - hunyuan_video
+        - wan_v2.1_1.3b
+        - wan_v2.1_14b
+        - hidream_i1
+        - qwen_image
+        - wan_v2.2_5b
+        - z_image
+        - ernie_image
+        - flux2
+        - flux2_9b
+        - flux2_4b
+        - cosmos2.5_2b
+        - ltx2
+        - ltx2.3
+        - seedvr2_3b
+        - seedvr2_7b
+
+    Sampler:
+      type: string
+      description: |
+        1:1 mirror of `SamplerType` (DataModels). 20 variants — fixed enum of
+        sampler+scheduler combinations baked into the engine (no separate
+        Scheduler axis, contrary to A1111/Comfy conventions).
+      enum:
+        - dpmpp_2m_karras
+        - euler_a
+        - ddim
+        - plms
+        - dpmpp_sde_karras
+        - unipc
+        - lcm
+        - euler_a_substep
+        - dpmpp_sde_substep
+        - tcd
+        - euler_a_trailing
+        - dpmpp_sde_trailing
+        - dpmpp_2m_ays
+        - euler_a_ays
+        - dpmpp_sde_ays
+        - dpmpp_2m_trailing
+        - ddim_trailing
+        - unipc_trailing
+        - unipc_ays
+        - tcd_trailing
+
+    SeedMode:
+      type: string
+      description: |
+        1:1 mirror of `SeedMode` (DataModels). Drives how the seed is mapped
+        to the noise tensor — affects reproducibility across hardware.
+      enum: [legacy, torch_cpu_compatible, scale_alike, nvidia_gpu_compatible]
+
+    ControlNetTask:
+      type: string
+      description: |
+        1:1 mirror of the SDK's `ControlHintType` (raw String identical).
+        Exposed for `Asset.task` (catalog) and informational use; not all tasks
+        have a working public hint-image path in v0 — see notes on
+        `reference_image` / `depth_image` in `EngineParams`.
+      enum:
+        - custom
+        - depth
+        - canny
+        - scribble
+        - pose
+        - normalbae
+        - color
+        - lineart
+        - softedge
+        - seg
+        - inpaint
+        - ip2p
+        - shuffle
+        - mlsd
+        - tile
+        - blur
+        - lowquality
+        - gray
+
+    ControlMode:
+      type: string
+      description: |
+        1:1 mirror of the SDK's `ControlMode`. `prompt` biases denoising toward
+        the text prompt over the control hint; `control` does the opposite.
+      enum: [balanced, prompt, control]
+      default: balanced
+
+    ControlInputType:
+      type: string
+      description: |
+        1:1 mirror of the SDK's `ControlInputType`. Used on
+        `ControlNetRef.input_type_override` for ControlNet models the engine
+        catalog can't auto-classify; ignored when the model's modifier is
+        known.
+      enum:
+        - unspecified
+        - custom
+        - depth
+        - canny
+        - scribble
+        - pose
+        - normalbae
+        - color
+        - lineart
+        - softedge
+        - seg
+        - inpaint
+        - ip2p
+        - shuffle
+        - mlsd
+        - tile
+        - blur
+        - lowquality
+        - gray
+
+    AssetType:
+      type: string
+      description: |
+        1:1 mirror of the `AssetType` enum. The six asset categories the
+        server knows. There is no `vae` or `motion_module` type.
+      enum: [base_model, lora, controlnet, embedding, upscaler, face_restoration]
+
+    ImageFormat:
+      type: string
+      description: |
+        Output image encoding. 1:1 mirror of the `OutputFormat` enum —
+        only `png` and `jpeg` are supported. Defaults to `png` when the
+        request omits `output_format`.
+      enum: [png, jpeg]
+
+    VideoFormat:
+      type: string
+      description: |
+        v0 only supports mp4 with H.264 (`mp4_h264`) or HEVC (`mp4_hevc`).
+        Other formats (webm/vp9, gif, frame_sequence) are deferred — webm
+        would need a non-AVFoundation encoder, gif is low-utility for
+        agents, frame_sequence can be emulated client-side by extracting
+        frames from the mp4.
+      enum: [mp4_h264, mp4_hevc]
+      default: mp4_h264
+
+    # ───────────────────────────── Assets ────────────────────────────
+
+    AssetSource:
+      description: |
+        Discriminated union of install sources, keyed on `type`. The
+        server accepts exactly two source types: `catalog` and
+        `local_file`. There is no HuggingFace or URL source.
+      oneOf:
+        - $ref: '#/components/schemas/AssetSourceCatalog'
+        - $ref: '#/components/schemas/AssetSourceLocalFile'
+      discriminator:
+        propertyName: type
+        mapping:
+          catalog:     '#/components/schemas/AssetSourceCatalog'
+          local_file:  '#/components/schemas/AssetSourceLocalFile'
+
+    AssetSourceCatalog:
+      type: object
+      required: [type, model]
+      properties:
+        type:  { type: string, enum: [catalog] }
+        model: { type: string, description: "Catalog model identifier (typically the canonical file name)." }
+      description: |
+        Resolves through the SDK's ModelZoo catalogue and downloads any
+        missing files. Base models only — the catalogue resolver does
+        not cover LoRA / ControlNet / etc.
+
+    AssetSourceLocalFile:
+      type: object
+      required: [type, asset_type, path]
+      properties:
+        type:         { type: string, enum: [local_file] }
+        asset_type:   { $ref: '#/components/schemas/AssetType' }
+        path:         { type: string, description: "Absolute path to the source file on the server filesystem." }
+        name:         { type: string, description: "Optional display name; defaults to the file basename." }
+        architecture: { $ref: '#/components/schemas/Architecture', description: "Override auto-detection." }
+      description: |
+        Side-loads a local file. Supports `asset_type=lora` only (via the
+        `LoRAImporter` conversion pipeline). Other asset types return
+        `INSTALL_NOT_SUPPORTED_FOR_TYPE`.
+
+    # The Asset family is a discriminated union keyed on `type`. Each
+    # variant declares only the fields that make sense for its type —
+    # there is no shared `AssetBase`. The wire shapes mirror the
+    # `BaseModelAsset` / `LoRAAsset` / `ControlNetAsset` / `EmbeddingAsset`
+    # / `UpscalerAsset` / `FaceRestorationAsset` Swift structs 1:1.
+
+    ImageSize:
+      type: object
+      required: [width, height]
+      properties:
+        width:  { type: integer }
+        height: { type: integer }
+
+    WeightRange:
+      type: object
+      description: |
+        Recommended LoRA weight band from the catalog. `recommended` is
+        the catalog's suggested value within `[lower, upper]`.
+      required: [lower, upper]
+      properties:
+        lower:       { type: number }
+        upper:       { type: number }
+        recommended: { type: number, nullable: true }
+
+    BaseModelAsset:
+      type: object
+      description: |
+        A base diffusion model (`type: base_model`). Fields mirror the
+        engine catalog `Specification` for the model.
+      required:
+        [type, id, name, architecture, domain, downloaded,
+         is_consistency_model, supports_remote_api, deprecated]
+      properties:
+        type:         { type: string, enum: [base_model] }
+        id:           { type: string, description: "File name — the canonical asset id." }
+        name:         { type: string }
+        architecture: { $ref: '#/components/schemas/Architecture' }
+        domain:       { $ref: '#/components/schemas/Domain' }
+        downloaded:
+          type: boolean
+          description: "True when the model file is present on disk."
+        recommended_resolution:
+          allOf: [{ $ref: '#/components/schemas/ImageSize' }]
+          nullable: true
+        hires_fix_recommended_resolution:
+          allOf: [{ $ref: '#/components/schemas/ImageSize' }]
+          nullable: true
+        frames_per_second:
+          type: number
+          nullable: true
+          description: "Video models only."
+        is_consistency_model:
+          type: boolean
+          description: "Turbo / LCM / Lightning few-step distilled model."
+        supports_remote_api: { type: boolean }
+        guidance_embed:
+          type: boolean
+          nullable: true
+          description: "Flux distilled guidance-embed flag."
+        builtin_lora: { type: boolean, nullable: true }
+        is_bf16:      { type: boolean, nullable: true }
+        deprecated:   { type: boolean }
+        modifier:
+          type: string
+          nullable: true
+          description: |
+            Raw `SamplerModifier` from the engine catalog. Identifies the
+            model's flavor at the SDK level. One of: `inpainting`,
+            `depth`, `canny`, `editing`, `double`, `kontext`, `kontext_kv`,
+            `qwenimage_edit_plus`, `qwenimage_edit_2511`,
+            `qwenimage_layered`. Null / omitted for vanilla
+            text-to-image models. Pair with `editing_mode` for semantic
+            routing.
+        editing_mode:
+          type: string
+          nullable: true
+          enum: [inpainting, hint_conditioned, instruction_edit, layered_edit, other]
+          description: |
+            Agent-facing semantic category for the model's `modifier`.
+            Lets the caller decide which verb to use:
+              - `inpainting` → POST /v1/edit with `from.image` + `mask`
+              - `hint_conditioned` (depth, canny) → POST /v1/compose with
+                the matching hint image via `guides[]` or the typed
+                ControlNet entry on `params.controlnets[]`
+              - `instruction_edit` (Flux Kontext, Qwen-Image-Edit) →
+                POST /v1/edit with `from.image` + `instruction`, no mask
+              - `layered_edit` (Qwen Image Layered) → POST /v1/edit with
+                the canvas as `from.image`
+              - `other` → legacy modifier, refer to the model's note
+            Null / omitted for vanilla text-to-image.
+        hugging_face_link: { type: string, nullable: true }
+        note:              { type: string, nullable: true }
+        copyright:         { type: string, nullable: true }
+        install_size_bytes:
+          type: integer
+          format: int64
+          nullable: true
+          description: |
+            Total install footprint in bytes, counting every companion
+            file (checkpoint + text encoder + autoencoder + CLIP
+            encoder + …).
+              - For downloaded models (`downloaded: true`): exact sum
+                from the local filesystem.
+              - For not-downloaded catalog models: HEAD against the
+                canonical SDK CDN (`static.libnnc.org`), summed across
+                companions.
+              - `null` when the size can't be honestly computed (CDN
+                unreachable for at least one companion). The server does
+                not report partial sums — they'd be misleading.
+            Combine with `downloaded` to interpret:
+              - downloaded=true → bytes currently on disk
+              - downloaded=false → bytes an install would cost
+
+    LoRAAsset:
+      type: object
+      description: "A LoRA adapter (`type: lora`)."
+      required:
+        [type, id, name, compatible_architecture, domain, downloaded,
+         is_consistency_model, is_loha, deprecated]
+      properties:
+        type: { type: string, enum: [lora] }
+        id:   { type: string }
+        name: { type: string }
+        compatible_architecture:
+          allOf: [{ $ref: '#/components/schemas/Architecture' }]
+          description: "A LoRA targets a single architecture family (singular)."
+        domain: { $ref: '#/components/schemas/Domain' }
+        downloaded: { type: boolean }
+        weight_range:
+          allOf: [{ $ref: '#/components/schemas/WeightRange' }]
+          nullable: true
+        is_consistency_model: { type: boolean }
+        is_loha:              { type: boolean }
+        modifier:             { type: string, nullable: true }
+        deprecated:           { type: boolean }
+        note:                 { type: string, nullable: true }
+
+    ControlNetAsset:
+      type: object
+      description: "A ControlNet model (`type: controlnet`)."
+      required:
+        [type, id, name, compatible_architecture, downloaded,
+         control_type, deprecated]
+      properties:
+        type: { type: string, enum: [controlnet] }
+        id:   { type: string }
+        name: { type: string }
+        compatible_architecture: { $ref: '#/components/schemas/Architecture' }
+        downloaded: { type: boolean }
+        task:
+          allOf: [{ $ref: '#/components/schemas/ControlNetTask' }]
+          nullable: true
+          description: "Hint type — null when the catalog modifier is unrecognized."
+        control_type:
+          type: string
+          description: 'Raw control-family string: "controlnet", "t2iadapter", "ipadapterplus", …'
+        deprecated: { type: boolean }
+
+    EmbeddingAsset:
+      type: object
+      description: |
+        A textual-inversion embedding (`type: embedding`). Embeddings are
+        keyword-driven: the engine auto-resolves them when their
+        `keyword` appears in the prompt — there is no `embeddings[]`
+        field on a generation request.
+      required:
+        [type, id, name, compatible_architecture, downloaded,
+         keyword, length, deprecated]
+      properties:
+        type: { type: string, enum: [embedding] }
+        id:   { type: string }
+        name: { type: string }
+        compatible_architecture: { $ref: '#/components/schemas/Architecture' }
+        downloaded: { type: boolean }
+        keyword:    { type: string, description: "Trigger word." }
+        length:     { type: integer, description: "Number of tokens." }
+        deprecated: { type: boolean }
+
+    UpscalerAsset:
+      type: object
+      description: "A post-diffusion upscaler model (`type: upscaler`)."
+      required: [type, id, name, downloaded, scale_factor, blocks]
+      properties:
+        type: { type: string, enum: [upscaler] }
+        id:   { type: string }
+        name: { type: string }
+        downloaded: { type: boolean }
+        scale_factor:
+          type: string
+          description: "Raw value of the SDK `UpscaleFactor` enum."
+        blocks: { type: integer }
+
+    FaceRestorationAsset:
+      type: object
+      description: "A face-restoration model (`type: face_restoration`)."
+      required: [type, id, name, downloaded]
+      properties:
+        type: { type: string, enum: [face_restoration] }
+        id:   { type: string }
+        name: { type: string }
+        downloaded: { type: boolean }
+
+    Asset:
+      description: |
+        Discriminated union of every asset variant, keyed on `type`.
+        Every variant carries a `downloaded` boolean.
+      oneOf:
+        - $ref: '#/components/schemas/BaseModelAsset'
+        - $ref: '#/components/schemas/LoRAAsset'
+        - $ref: '#/components/schemas/ControlNetAsset'
+        - $ref: '#/components/schemas/EmbeddingAsset'
+        - $ref: '#/components/schemas/UpscalerAsset'
+        - $ref: '#/components/schemas/FaceRestorationAsset'
+      discriminator:
+        propertyName: type
+        mapping:
+          base_model:       '#/components/schemas/BaseModelAsset'
+          lora:             '#/components/schemas/LoRAAsset'
+          controlnet:       '#/components/schemas/ControlNetAsset'
+          embedding:        '#/components/schemas/EmbeddingAsset'
+          upscaler:         '#/components/schemas/UpscalerAsset'
+          face_restoration: '#/components/schemas/FaceRestorationAsset'
+
+    InstallAssetRequest:
+      type: object
+      required: [source]
+      properties:
+        source: { $ref: '#/components/schemas/AssetSource' }
+        confirm_large_download:
+          type: boolean
+          default: false
+          description: |
+            Required `true` when the install footprint exceeds the
+            server's large-download threshold (default 5 GB). Without
+            it, the install returns `412 LARGE_MODEL_DOWNLOAD` with
+            the byte count in the message. Below the threshold the
+            flag is ignored.
+
+            The size the gate checks is the same as
+            `install_size_bytes` on `GET /v1/assets/{id}`: full
+            install footprint (checkpoint + every companion file).
+            Read it first; pass this flag once you've decided.
+
+    # ───────────────────── Generation references ─────────────────────
+
+    LoRAReference:
+      type: object
+      description: |
+        One LoRA entry on a generation request. Maps 1:1 to a
+        `Configuration.LoRA` (mode `.all`).
+      required: [lora_id, weight]
+      properties:
+        lora_id: { type: string }
+        weight:
+          type: number
+          description: |
+            LoRA weight, forwarded verbatim to the engine. The server
+            does not range-check this field — any finite value passes.
+            Typical useful range is roughly `[-2, 2]`; see the LoRA
+            asset's `weight_range` for the catalog-recommended band.
+
+    ControlNetRef:
+      type: object
+      required: [model_id]
+      description: |
+        A ControlNet model entry. Maps 1:1 to one `Configuration.Control` SDK
+        entry.
+
+        Hint images live OUTSIDE this object. The public SDK surface
+        (`MediaGenerationPipeline`) only carries hint images for four input
+        roles — `image` (primary, used by canny/softedge/mlsd/scribble engine
+        preprocessors), `mask`, `moodboard` (→ `reference_image` here), and
+        `depth` (→ `depth_image` here). For the other ControlNet tasks
+        (pose, lineart, normalbae, seg, color, blur, lowquality, gray, custom)
+        there is no public hint-image transport in v0; submitting an entry
+        with that modifier returns `400 CONTROL_HAS_NO_PUBLIC_HINT_PATH` on
+        any generation route, and `/v1/resolve` reports the same code in
+        `errors[]`.
+      properties:
+        model_id:
+          type: string
+          description: ControlNet model file id (from `/v1/assets`).
+        weight: { type: number, minimum: 0, maximum: 10, default: 1.0 }
+        guidance_start:
+          type: number
+          minimum: 0
+          maximum: 1
+          default: 0.0
+          description: Fractional diffusion-step index at which this control begins to act.
+        guidance_end:
+          type: number
+          minimum: 0
+          maximum: 1
+          default: 1.0
+          description: Fractional diffusion-step index at which this control stops acting.
+        control_mode: { $ref: '#/components/schemas/ControlMode' }
+        input_type_override:
+          allOf:
+            - $ref: '#/components/schemas/ControlInputType'
+          description: |
+            Used only when the engine catalog has no entry for `model_id`
+            (e.g. a custom/local file). Falls back to `unspecified`.
+        no_prompt: { type: boolean, default: false }
+        global_average_pooling: { type: boolean, default: true }
+        down_sampling_rate: { type: number, minimum: 1, maximum: 16, default: 1.0 }
+        target_blocks:
+          type: array
+          items: { type: string }
+          description: Engine-internal targeting; advanced use only.
+
+    # ──────────────────── Generation params (3-layer) ────────────────
+
+    Diagnostic:
+      type: object
+      required: [code, message]
+      description: |
+        Structured diagnostic emitted by `/v1/resolve` and echoed in
+        every generation response's `RunMetadata` (`warnings`). `code` is
+        a stable identifier suitable for client-side switching; `message`
+        is a human-readable explanation; `field_path` points at the
+        offending request field when applicable.
+
+        A diagnostic appears either in a `warnings[]` array (non-fatal —
+        the request will still run) or in `errors[]` (the request would
+        fail if submitted to a generation endpoint).
+
+        Warning `code` values currently emitted:
+          - `BATCH_SIZE_MAY_CAP` — `batch_size > 1` on a video / seedvr2
+            architecture, which caps engine-side batch_size to 1.
+          - `PRESERVE_ORIGINAL_AFTER_INPAINT_IGNORED` — the
+            `extensions.draw_things.preserve_original_after_inpaint` flag
+            is set but the base model's modifier is not `inpainting`, so
+            the engine ignores it.
+          - `REFERENCE_IMAGE_UNUSED` — `reference_image` supplied but no
+            `controlnets[]` entry has `input_type_override='shuffle'`.
+          - `DEPTH_IMAGE_UNUSED` — `depth_image` supplied but no
+            `controlnets[]` entry has `input_type_override='depth'`.
+          - `EDITING_MODEL_DETECTED` — the base model carries an editing
+            `modifier`; the message explains which endpoint / input
+            shape it expects.
+
+        Error `code` values are drawn from the `ErrorCode` enum (e.g.
+        `VALIDATION_FAILED`, `MODEL_NOT_INSTALLED`,
+        `CONTROL_HAS_NO_PUBLIC_HINT_PATH`, `INVALID_REFERENCE_IMAGE_DATA`,
+        `INVALID_DEPTH_IMAGE_DATA`, …).
+      properties:
+        code:       { type: string }
+        field_path: { type: string }
+        message:    { type: string }
+
+    AppliedDefault:
+      type: object
+      required: [field_path, value]
+      description: |
+        One Core-field default the engine filled in because the request
+        didn't carry it. `field_path` is the JSON path in the request
+        (snake_case, no leading slash); `value` is the engine-side default
+        for the chosen base model. Values vary across architectures
+        (e.g. Z-Image and SDXL recommend different samplers / cfg).
+      properties:
+        field_path: { type: string }
+        value:
+          description: A JSON scalar — null, boolean, integer, number, or string.
+
+    ResolveResponse:
+      type: object
+      required: [applied_defaults, warnings, errors]
+      properties:
+        resolved_request:
+          allOf:
+            - $ref: '#/components/schemas/Recipe'
+          nullable: true
+          description: |
+            The verb body the caller submitted, replayed with engine
+            defaults folded into `params` for the chosen base model.
+            Wrapped as a `Recipe` (`{ via: compose|edit|restore, ... }`)
+            — re-postable to `/v1/<via>` as-is. `null` when validation
+            refused materialization (e.g. `PARAMS_REQUIRED` on a verb
+            body missing its `params` block) — the diagnostic then lives
+            in `errors[]`. Sub-objects (loras, controlnets, hires_fix,
+            …) are opt-in features and are not auto-filled — they appear
+            in `resolved_request` only if the caller supplied them.
+            `seed` stays as-passed: `-1` / `null` requests a randomized
+            seed that gets resolved at generate-time.
+        applied_defaults:
+          type: array
+          items: { $ref: '#/components/schemas/AppliedDefault' }
+          description: |
+            Per-field record of which Core defaults the engine had to
+            fill. Matches what was injected into `resolved_request`.
+            Wrapper-side fall-backs (`negative_prompt = ""`,
+            `output_format = png`) are not reported here — only
+            engine-derived defaults are.
+        warnings:
+          type: array
+          items: { $ref: '#/components/schemas/Diagnostic' }
+          description: |
+            Non-fatal engine-quirk observations. The request will still
+            run; the same set comes back in `RunMetadata.warnings` on a
+            real generation.
+        errors:
+          type: array
+          items: { $ref: '#/components/schemas/Diagnostic' }
+          description: |
+            Issues that will prevent (or undermine) generation. `/v1/resolve`
+            still returns `200` with these populated — they are reported
+            for inspection, not raised. A request for which `errors` is
+            non-empty will fail with a typed 4xx (and `estimated_compute_units`
+            / `applied_defaults` are skipped) when submitted to a generation
+            endpoint.
+        estimated_compute_units:
+          type: integer
+          nullable: true
+          description: |
+            Best-effort engine estimate. `null` when the chosen architecture
+            does not expose one, or when `errors` is non-empty (the model
+            load is skipped in that case).
+
+    HiresFixParams:
+      type: object
+      description: |
+        Two-pass hi-res fix. `first_pass_width` / `first_pass_height` set
+        the low-res first-pass dimensions; they are forwarded to the
+        engine without server-side range validation.
+      required: [enabled]
+      properties:
+        enabled:           { type: boolean }
+        first_pass_width:  { type: integer }
+        first_pass_height: { type: integer }
+        strength:          { type: number }
+
+    RefinerParams:
+      type: object
+      required: [model_id]
+      properties:
+        model_id: { type: string }
+        start:    { type: number, minimum: 0, maximum: 1 }
+
+    UpscalerParams:
+      type: object
+      required: [model_id]
+      description: |
+        Post-diffusion upscaler chain. `model_id` must match an installed
+        upscaler asset (see `GET /v1/assets?type=upscaler`); 400
+        `UPSCALER_NOT_INSTALLED` otherwise. `scale_factor` is the
+        engine-side multiplier (typically 2 or 4 depending on the
+        upscaler weights); when omitted, the engine default is preserved.
+      properties:
+        model_id:     { type: string }
+        scale_factor: { type: integer, minimum: 2, maximum: 8 }
+
+    TileSetParams:
+      type: object
+      required: [enabled]
+      properties:
+        enabled:     { type: boolean }
+        tile_width:  { type: integer, minimum: 64 }
+        tile_height: { type: integer, minimum: 64 }
+        overlap:     { type: integer, minimum: 0 }
+
+    TilingParams:
+      type: object
+      description: |
+        VAE-decoding and/or diffusion tiling. Useful for very large
+        resolutions where the whole tensor doesn't fit in memory.
+      properties:
+        decoding:  { $ref: '#/components/schemas/TileSetParams' }
+        diffusion: { $ref: '#/components/schemas/TileSetParams' }
+
+    FlowMatchParams:
+      type: object
+      description: "Flow-Matching sampling shift (Flux / SD3 / PixArt / Z-Image)."
+      properties:
+        shift:                      { type: number, minimum: 0 }
+        resolution_dependent_shift: { type: boolean }
+
+    SDXLConditioningParams:
+      type: object
+      description: "SDXL-family micro-conditioning. Ignored by non-SDXL architectures."
+      properties:
+        original_width:            { type: integer, minimum: 0 }
+        original_height:           { type: integer, minimum: 0 }
+        crop_top:                  { type: integer }
+        crop_left:                 { type: integer }
+        target_width:              { type: integer, minimum: 0 }
+        target_height:             { type: integer, minimum: 0 }
+        negative_original_width:   { type: integer, minimum: 0 }
+        negative_original_height:  { type: integer, minimum: 0 }
+        aesthetic_score:           { type: number }
+        negative_aesthetic_score:  { type: number }
+        zero_negative_prompt:      { type: boolean }
+
+    SeparatePromptParams:
+      type: object
+      required: [enabled]
+      properties:
+        enabled: { type: boolean }
+        text:    { type: string }
+
+    TextEncodersParams:
+      type: object
+      description: |
+        Per-encoder prompt fan-out for multi-encoder architectures
+        (SDXL CLIP-L/G, T5). When `separate_*.enabled=false` the main
+        prompt is used.
+      properties:
+        t5_decoding:          { type: boolean }
+        separate_clip_l:      { $ref: '#/components/schemas/SeparatePromptParams' }
+        separate_open_clip_g: { $ref: '#/components/schemas/SeparatePromptParams' }
+        separate_t5:          { $ref: '#/components/schemas/SeparatePromptParams' }
+
+    CascadeParams:
+      type: object
+      description: "Würstchen / Stable Cascade two-stage settings."
+      properties:
+        stage2_steps:    { type: integer, minimum: 1 }
+        stage2_guidance: { type: number,  minimum: 0 }
+        stage2_shift:    { type: number,  minimum: 0 }
+
+    ImagePriorParams:
+      type: object
+      description: "Kandinsky-style image-prior step settings."
+      properties:
+        steps:                    { type: integer, minimum: 0 }
+        negative_prompt_enabled:  { type: boolean }
+        clip_weight:              { type: number }
+
+    Extensions:
+      type: object
+      properties:
+        draw_things: { $ref: '#/components/schemas/DrawThingsExtensions' }
+
+    DrawThingsExtensions:
+      type: object
+      properties:
+        preserve_original_after_inpaint:
+          type: boolean
+          description: |
+            When true, the engine composites the unmasked region from the
+            source image back over the diffusion result. The composite is
+            applied only on the engine's inpainting code paths, which
+            require the base model to have `modifier=inpainting` in its
+            spec (i.e. an inpainting-finetuned `.ckpt`). For plain base
+            models — including Z-Image, Flux, SD3 — the flag plumbs
+            through but is a no-op: the whole canvas is regenerated
+            according to `denoising_strength` regardless of the mask.
+            Confirmed empirically with z_image_turbo: 4 strength values
+            × {true, false} produce byte-identical output.
+        tea_cache:                 { $ref: '#/components/schemas/TeaCacheParams' }
+        causal_inference:          { $ref: '#/components/schemas/CausalInferenceParams' }
+        cfg_zero_star:             { $ref: '#/components/schemas/CfgZeroStarParams' }
+        guidance_embed:            { $ref: '#/components/schemas/GuidanceEmbedParams' }
+        stochastic_sampling_gamma: { type: number }
+        image_guidance_scale:      { type: number, description: "InstructPix2Pix-style image guidance." }
+        compression_artifacts:     { $ref: '#/components/schemas/CompressionArtifactsParams' }
+        face_restoration:          { $ref: '#/components/schemas/FaceRestorationParams' }
+        mask_blur:                 { type: number, minimum: 0, description: "Gaussian feathering of the inpaint mask edge (pixels)." }
+        mask_blur_outset:          { type: integer, description: "Extra outset added to the blurred mask, in pixels." }
+
+    TeaCacheParams:
+      type: object
+      required: [enabled]
+      properties:
+        enabled:        { type: boolean }
+        start:          { type: integer, minimum: 0 }
+        end:            { type: integer, minimum: 0 }
+        threshold:      { type: number }
+        max_skip_steps: { type: integer, minimum: 0 }
+
+    CausalInferenceParams:
+      type: object
+      properties:
+        length: { type: integer, minimum: 0 }
+        pad:    { type: integer, minimum: 0 }
+
+    CfgZeroStarParams:
+      type: object
+      required: [enabled]
+      properties:
+        enabled:    { type: boolean }
+        init_steps: { type: integer, minimum: 0 }
+
+    GuidanceEmbedParams:
+      type: object
+      required: [enabled]
+      properties:
+        enabled: { type: boolean }
+        value:   { type: number }
+
+    CompressionMethod:
+      type: string
+      enum: [disabled, h264, h265, jpeg]
+
+    CompressionArtifactsParams:
+      type: object
+      required: [method]
+      properties:
+        method:  { $ref: '#/components/schemas/CompressionMethod' }
+        quality: { type: number, minimum: 0, maximum: 1 }
+
+    FaceRestorationParams:
+      type: object
+      required: [model_id]
+      properties:
+        model_id: { type: string }
+
+    # ────────────────── Semantic API — verbs + recipes ─────────────────
+    #
+    # Three verbs (`compose`, `edit`, `restore`) + a `pipeline` sugar,
+    # keyed on preservation level (input → output).
+
+    FromSource:
+      description: |
+        Polymorphic image source. Wire shapes:
+
+        - `{ "image": "<base64>" }` — literal bytes
+        - `{ "via": "compose"|"edit"|"restore", … }` — inline sub-recipe;
+          executed first, its output bytes pipe into the parent op
+        - `"$<step_as_label>"` (bare string) — references the output of an
+          earlier `POST /v1/pipeline` step (only valid inside a pipeline)
+      oneOf:
+        - type: object
+          required: [image]
+          properties:
+            image: { type: string, format: byte }
+        - $ref: '#/components/schemas/Recipe'
+        - type: string
+          pattern: '^\$[A-Za-z_][A-Za-z0-9_]*$'
+
+    GuideKind:
+      type: string
+      description: |
+        Friendly-name hint kind on `guides[].kind`. Deliberately narrow —
+        restricted to the two roles the public MGK surface plumbs
+        distinctly:
+          - `depth` — routed to `.depth()` (depth ControlNets, depth-aware
+            architectures).
+          - `reference` — routed to `.moodboard()` (IP-Adapter, shuffle-class
+            ControlNets, generic style/identity reference).
+        Anything else (canny, scribble, pose, normalbae, lineart, …) must
+        go through the full `controlnets[]` entry on `EngineParams` —
+        `guides[]` does not silently fold unrelated kinds onto moodboard.
+      enum:
+        - depth
+        - reference
+
+    GuideRef:
+      type: object
+      description: |
+        One conditioning guide on `compose.guides[]`. `image` is polymorphic
+        (literal bytes, sub-recipe, or pipeline step ref). `kind` selects
+        the SDK hint role: `depth` → `.depth()`, `reference` → `.moodboard()`.
+        For any other ControlNet task, use the full `controlnets[]` entry
+        on `EngineParams` instead — `guides[]` is intentionally limited to
+        the two roles the public SDK plumbs distinctly.
+      required: [kind, image]
+      properties:
+        kind:   { $ref: '#/components/schemas/GuideKind' }
+        image:  { $ref: '#/components/schemas/FromSource' }
+        weight: { type: number }
+
+    ReferenceRole:
+      type: string
+      description: Closed list of reference-image roles on `edit.references[]`.
+      enum: [style, identity, layout, pose, subject, reference]
+
+    Reference:
+      type: object
+      required: [image]
+      properties:
+        image: { $ref: '#/components/schemas/FromSource' }
+        role:  { $ref: '#/components/schemas/ReferenceRole' }
+
+    VideoMotionParams:
+      type: object
+      description: |
+        Architecture-conditional motion knobs. `motion_scale` is honored
+        by SVD-family models; `guiding_frame_noise` by Wan i2v;
+        `start_frame_guidance` by both. All optional — engine defaults
+        preserved when omitted. The engine silently ignores knobs that
+        don't apply to the selected architecture.
+      properties:
+        motion_scale:         { type: integer, minimum: 0, maximum: 1023 }
+        guiding_frame_noise:  { type: number,  minimum: 0, maximum: 1 }
+        start_frame_guidance: { type: number,  minimum: 0, maximum: 10 }
+
+    VideoExtraParams:
+      type: object
+      description: |
+        Video knobs on `EngineParams.video`. Required when the chosen
+        `model` is a video architecture (txt2vid / img2vid paths).
+      required: [num_frames]
+      properties:
+        num_frames:
+          type: integer
+          minimum: 1
+          maximum: 256
+          description: |
+            Total frames to generate. Bounded per architecture — the
+            engine caps inputs that exceed what a given architecture
+            supports.
+        fps:          { type: integer, minimum: 1, maximum: 120, default: 24 }
+        video_format:
+          allOf:
+            - $ref: '#/components/schemas/VideoFormat'
+          description: Output container/codec. Default `mp4_h264`.
+        motion:       { $ref: '#/components/schemas/VideoMotionParams' }
+
+    EngineParams:
+      type: object
+      description: |
+        Engine knobs — the `params` sub-object on every verb body.
+        Organized in three layers:
+
+        1. **Core flat fields** — `width`, `height`, `steps`, `cfg_scale`,
+           `seed`, `seed_mode`, `sampler`, `clip_skip`, `output_format`,
+           `batch_size`, `batch_count`, plus the semantic-API additions
+           `denoising_strength`, `conditioning_strength`, `video`.
+        2. **Thematic sub-objects** — `loras`, `controlnets`,
+           `reference_image`, `depth_image`, `hires_fix`, `refiner`,
+           `upscaler`, `tiling`, `flow_match`, `sdxl_conditioning`,
+           `text_encoders`, `cascade`, `image_prior`, `sharpness`.
+           Generic groupings that would survive a swap of the underlying
+           engine. All optional and all wired today.
+        3. **`extensions.draw_things.*`** — strictly engine-specific
+           knobs that would not exist behind a Comfy / A1111 backend.
+
+        Every optional Core field falls back to the chosen base model's
+        engine-recommended template when omitted. The server snaps the
+        pipeline back to that pristine template before each request, so
+        a previous request's mutations never leak. Only Core fields are
+        auto-filled and reported via `RunMetadata.applied_defaults` (and
+        folded into the recipe in `X-DHT-Recipe`); the layer-2
+        sub-objects are opt-in and pass through unchanged.
+
+        `width` / `height` / `steps` are required.
+      required: [width, height, steps]
+      properties:
+        width:        { type: integer, minimum: 64, maximum: 4096, multipleOf: 64 }
+        height:       { type: integer, minimum: 64, maximum: 4096, multipleOf: 64 }
+        steps:        { type: integer, minimum: 1,  maximum: 200 }
+        cfg_scale:    { type: number,  minimum: 0,  maximum: 30, exclusiveMinimum: true }
+        seed:         { type: integer, format: int64, description: "Omit or pass -1 for random." }
+        seed_mode:    { $ref: '#/components/schemas/SeedMode' }
+        sampler:      { $ref: '#/components/schemas/Sampler' }
+        clip_skip:    { type: integer, minimum: 1, maximum: 12 }
+        output_format:
+          allOf: [{ $ref: '#/components/schemas/ImageFormat' }]
+          description: PNG / JPEG. Default `png` when omitted.
+        batch_size:   { type: integer, minimum: 1, maximum: 8 }
+        batch_count:  { type: integer, minimum: 1, maximum: 16 }
+        denoising_strength:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: |
+            Used by `compose` when `from` carries an image (img2img path,
+            default 0.7) and by `edit` on the inpaint path (default 1.0).
+            Ignored on text-only / video / restore paths.
+        conditioning_strength:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: |
+            Used by `compose` when targeting a video model with `from`
+            (img2vid path) — forwarded to `Configuration.strength`. Engine
+            default is used when omitted.
+        video:
+          allOf: [{ $ref: '#/components/schemas/VideoExtraParams' }]
+          description: |
+            Required when `model` is a video architecture. Carries
+            `num_frames` (required), plus optional `fps`, `video_format`,
+            `motion`.
+        loras:
+          type: array
+          items: { $ref: '#/components/schemas/LoRAReference' }
+        controlnets:
+          type: array
+          items: { $ref: '#/components/schemas/ControlNetRef' }
+        reference_image:
+          type: string
+          format: byte
+          description: |
+            Base64-encoded reference image. Routed as `.moodboard()` —
+            usually consumed by an IP-Adapter or `shuffle` ControlNet.
+        depth_image:
+          type: string
+          format: byte
+          description: Base64-encoded depth map. Routed as `.depth()`.
+        hires_fix:          { $ref: '#/components/schemas/HiresFixParams' }
+        refiner:            { $ref: '#/components/schemas/RefinerParams' }
+        upscaler:           { $ref: '#/components/schemas/UpscalerParams' }
+        tiling:             { $ref: '#/components/schemas/TilingParams' }
+        flow_match:         { $ref: '#/components/schemas/FlowMatchParams' }
+        sdxl_conditioning:  { $ref: '#/components/schemas/SDXLConditioningParams' }
+        text_encoders:      { $ref: '#/components/schemas/TextEncodersParams' }
+        cascade:            { $ref: '#/components/schemas/CascadeParams' }
+        image_prior:        { $ref: '#/components/schemas/ImagePriorParams' }
+        sharpness:          { type: number }
+        extensions:         { $ref: '#/components/schemas/Extensions' }
+
+    ComposeRequest:
+      type: object
+      description: |
+        `POST /v1/compose` body. Produces an image OR a video — the chosen
+        model's `domain` decides. `from` is *a guide*, not a target — the
+        engine may diverge freely. `from == null` is pure text-to-output.
+
+        Four dispatch cells, keyed on `(from, model.domain)`:
+
+        | `from`  | model domain | Path                                                            |
+        |---------|--------------|-----------------------------------------------------------------|
+        | `null`  | `image`      | text-to-image                                                   |
+        | image   | `image`      | image-to-image (`params.denoising_strength` defaults to `0.7`)  |
+        | `null`  | `video`      | text-to-video — `params.video.num_frames` REQUIRED              |
+        | image   | `video`      | image-to-video — `params.video.num_frames` REQUIRED; `params.conditioning_strength` opt-in |
+
+        Missing `params.video` on a video model raises a typed `422`. Use
+        `GET /v1/capabilities/{model_id}` to discover the model's domain
+        (or `POST /v1/resolve/compose` for a dry-run) before submitting.
+      required: [model, prompt]
+      properties:
+        model:           { type: string }
+        prompt:          { type: string }
+        negative_prompt: { type: string }
+        from:            { $ref: '#/components/schemas/FromSource' }
+        guides:
+          type: array
+          items: { $ref: '#/components/schemas/GuideRef' }
+        params:          { $ref: '#/components/schemas/EngineParams' }
+        run_id:
+          type: string
+          description: |
+            Optional client-supplied run id. Lets the client cancel via
+            `DELETE /v1/runs/{run_id}` without waiting for the response to
+            learn the id. The server generates a UUID when absent.
+
+    EditRequest:
+      type: object
+      description: |
+        `POST /v1/edit` body. Preserves `from`, changes the aspects called
+        out by `instruction`. A non-nil `mask` flips the engine path to
+        inpaint (non-zero pixels mark the region to regenerate). With an
+        instruction-edit base model (Flux Kontext, Qwen-Image-Edit) the
+        engine generates from noise steered by the instruction; with any
+        other model the inpaint mode (mask + denoise) is required.
+      required: [model, from, instruction]
+      properties:
+        model:       { type: string }
+        from:        { $ref: '#/components/schemas/FromSource' }
+        instruction: { type: string }
+        mask:
+          type: string
+          format: byte
+          description: |
+            Optional base64 mask. Presence switches the engine path from
+            instruction-edit to inpaint.
+        references:
+          type: array
+          items: { $ref: '#/components/schemas/Reference' }
+        params:      { $ref: '#/components/schemas/EngineParams' }
+        run_id:      { type: string }
+
+    RestoreRequest:
+      type: object
+      description: |
+        `POST /v1/restore` body. Preserves `from` integrally; only improves
+        fidelity. Currently driven by SeedVR2 (`seedvr2_3b` / `seedvr2_7b`).
+      required: [model, from]
+      properties:
+        model:  { type: string }
+        from:   { $ref: '#/components/schemas/FromSource' }
+        params: { $ref: '#/components/schemas/EngineParams' }
+        run_id: { type: string }
+
+    Recipe:
+      description: |
+        A complete verb body tagged with `via`. Used when a recipe is
+        nested inside `from.via` (sub-recipe) or as a `POST /v1/pipeline`
+        step. The top-level POST body for `/v1/compose` / `/v1/edit` /
+        `/v1/restore` does NOT carry `via` — the URL supplies it.
+      oneOf:
+        - allOf:
+            - { $ref: '#/components/schemas/ComposeRequest' }
+            - type: object
+              required: [via]
+              properties:
+                via: { type: string, enum: [compose] }
+        - allOf:
+            - { $ref: '#/components/schemas/EditRequest' }
+            - type: object
+              required: [via]
+              properties:
+                via: { type: string, enum: [edit] }
+        - allOf:
+            - { $ref: '#/components/schemas/RestoreRequest' }
+            - type: object
+              required: [via]
+              properties:
+                via: { type: string, enum: [restore] }
+      discriminator:
+        propertyName: via
+
+    PipelineStep:
+      type: object
+      description: |
+        One step in a `POST /v1/pipeline` body. The wire is a `Recipe`
+        plus an optional `as` label naming its image output. Later steps
+        reference the output via `"$<as>"` in their `from`,
+        `references[].image`, or `guides[].image`.
+      required: [via]
+      properties:
+        as:  { type: string }
+        via: { type: string, enum: [compose, edit, restore] }
+      # The full per-via body shape lives in `Recipe` (oneOf on `via`); the
+      # required `via` plus optional `as` is what makes a PipelineStep
+      # distinct from a bare Recipe.
+
+    PipelineRequest:
+      type: object
+      description: |
+        `POST /v1/pipeline` body. Ordered chain of recipes; later steps
+        reference earlier outputs by `"$<as>"`. Stateless — no asset
+        persists between calls; the in-memory step-output map lives only
+        for this invocation. `return` controls which outputs come back
+        (defaults to the last step under the implicit key `"result"`).
+      required: [steps]
+      properties:
+        steps:
+          type: array
+          minItems: 1
+          items: { $ref: '#/components/schemas/PipelineStep' }
+        return:
+          type: array
+          items: { type: string }
+          description: |
+            Step `as` labels whose outputs to return. Omit for the last
+            step only. Each name MUST match an `as` label on a prior step
+            (or the implicit `"result"`).
+
+    PipelineResponse:
+      type: object
+      description: |
+        `POST /v1/pipeline` response. JSON envelope by default. `outputs`
+        keys are step `as` labels (or `"result"` when `return` is omitted
+        and the last step had no `as`). Values are base64-encoded image
+        bytes. Multi-step returns share this envelope shape — multipart is
+        the planned alternative if a caller asks for it.
+      required: [outputs, generation_time_ms]
+      properties:
+        outputs:
+          type: object
+          additionalProperties: { type: string, format: byte }
+        generation_time_ms: { type: integer, minimum: 0 }
+
+    ContractExample:
+      type: object
+      description: |
+        Hand-written minimal valid request body for the contract's
+        Operation. Carries the target endpoint (`/v1/compose`,
+        `/v1/edit`, or `/v1/restore`) and the JSON body to POST. Agents
+        copy, substitute placeholders, send. R6 of the semantic-API plan.
+      required: [endpoint, body]
+      properties:
+        endpoint:
+          type: string
+          enum: ['/v1/compose', '/v1/edit', '/v1/restore']
+        body:
+          type: object
+          description: JSON body to POST at `endpoint`.
+
+    # ──────────────────────────── Results ────────────────────────────
+
+    VideoResult:
+      type: object
+      required: [data, format, width, height, num_frames, fps, duration_ms, seed]
+      properties:
+        data:
+          type: string
+          format: byte
+          description: |
+            Base64-encoded mp4 payload. v0 always emits an mp4 (H.264 or
+            HEVC depending on `video_format`); other formats are deferred.
+        format:      { $ref: '#/components/schemas/VideoFormat' }
+        width:       { type: integer }
+        height:      { type: integer }
+        num_frames:  { type: integer }
+        fps:         { type: integer }
+        duration_ms: { type: integer }
+        seed:        { type: integer, format: int64 }
+
+    RunMetadata:
+      type: object
+      required: [run_id, engine_version, effective_seed, warnings, applied_defaults]
+      description: |
+        Metadata attached to every generation response. Mirrors what
+        `/v1/resolve` would have surfaced for the same request — warnings
+        AND the Core defaults the engine filled in — so a caller that
+        skipped the dry-run gets the same visibility.
+      properties:
+        run_id:
+          type: string
+          description: |
+            Identifier for this run. Either the value the client supplied
+            in the request body's `run_id`, or a fresh UUID the server
+            generated when the field was absent.
+        engine_version: { type: string }
+        effective_seed:
+          type: integer
+          format: int64
+          description: |
+            Seed actually used for `images[0]`. Matches the top-level `seed`
+            field; duplicated here for symmetry with `/v1/resolve` consumers.
+        warnings:
+          type: array
+          items: { $ref: '#/components/schemas/Diagnostic' }
+        applied_defaults:
+          type: array
+          items: { $ref: '#/components/schemas/AppliedDefault' }
+
+    ImageGenerationResponse:
+      type: object
+      required: [images, seed, generation_time_ms, metadata]
+      properties:
+        images:
+          type: array
+          description: |
+            Base64-encoded image bytes, one entry per generated image.
+            Upper bound: `batch_size × batch_count`. On video / seedvr2
+            architectures the engine caps `batch_size` to 1, so the
+            actual count may be lower than `batch_size × batch_count`.
+          items: { type: string, format: byte }
+          minItems: 1
+        seed:
+          type: integer
+          format: int64
+          description: |
+            Seed used for `images[0]`. Subsequent indices derive from this base
+            following the configured `seed_mode`.
+        generation_time_ms:
+          type: integer
+          minimum: 0
+        metadata: { $ref: '#/components/schemas/RunMetadata' }
+
+    VideoGenerationResponse:
+      type: object
+      required: [videos, generation_time_ms, metadata]
+      properties:
+        videos:
+          type: array
+          items: { $ref: '#/components/schemas/VideoResult' }
+          minItems: 1
+        generation_time_ms: { type: integer, minimum: 0 }
+        metadata: { $ref: '#/components/schemas/RunMetadata' }
+
+    # ────────────────────────── SSE events ───────────────────────────
+
+    # Generation streaming (`POST /v1/{compose,edit,restore}?stream=true`)
+    # event sequence:
+    #
+    #   event: progress   (×N, one per diffusion step)
+    #   event: progress
+    #   ...
+    #   event: done       (exactly once, on success)
+    #   — or —
+    #   event: error      (exactly once, on failure or cancellation)
+    #
+    # The HTTP status is `200` as soon as the stream opens. A failure
+    # therefore surfaces only inside `event: error`, never as an HTTP
+    # status. In particular a run cancelled via `DELETE /v1/runs/{id}`
+    # mid-stream ends with `event: error` carrying
+    # `error_code: RUN_CANCELLED` — it does NOT produce HTTP 499. HTTP
+    # 499 is reserved for cancellation on the non-streaming path.
+
+    SSEEventProgress:
+      type: object
+      description: |
+        `event: progress` emitted per diffusion step during a streaming
+        generation (`?stream=true`). Surface: `step` + `total` only —
+        `image_index`, `frame_index` (video), and decoded `preview`
+        images are not emitted on this event (a live preview is exposed
+        separately via `GET /v1/runs/{run_id}`).
+
+        Note: the engine may emit the final `step == total` tick twice
+        (once for the last sampler call, once for the decoding signpost
+        that maps to the same clamped state). Clients should de-duplicate.
+      required: [step, total]
+      properties:
+        step:  { type: integer, minimum: 1 }
+        total: { type: integer, minimum: 1 }
+
+    SSEEventDone:
+      type: object
+      description: |
+        `event: done` carries the same `ImageGenerationResponse` that the
+        non-streaming JSON path would have returned. Emitted exactly once
+        per successful stream, immediately before the connection closes.
+      required: [images, seed, generation_time_ms, metadata]
+      allOf: [{ $ref: '#/components/schemas/ImageGenerationResponse' }]
+
+    SSEEventError:
+      type: object
+      description: |
+        `event: error` is emitted instead of `event: done` when the run
+        fails or is cancelled mid-stream. Carries the same `error_code`
+        taxonomy as the non-streaming JSON path (notably `RUN_CANCELLED`
+        for a `DELETE /v1/runs/{run_id}`).
+      required: [error_code, title]
+      properties:
+        error_code: { $ref: '#/components/schemas/ErrorCode' }
+        title:      { type: string }
+        detail:     { type: string }
+
+    SSEEventVideoGenerationDone:
+      type: object
+      description: |
+        `event: done` for video generation streams — same wire shape as
+        the image-side `SSEEventDone`, just with the video payload.
+      required: [videos, generation_time_ms, metadata]
+      allOf: [{ $ref: '#/components/schemas/VideoGenerationResponse' }]
+
+    # The `/v1/assets/install?stream=true` event wire format is documented
+    # in prose under that path — its events (`resolving`, `verifying`,
+    # `progress`, `done`, `error`) do not have dedicated schema objects.
+
+    # ──────────────────────────── Errors ─────────────────────────────
+
+    ErrorCode:
+      type: string
+      description: |
+        Stable code attached to every error response (RFC 7807 extension).
+        Codes marked `[jX]` are scheduled for a later jalon and not yet
+        emitted by the server.
+      enum:
+        # Request body / parsing
+        - VALIDATION_FAILED
+        - INPAINT_REQUIRES_MASK             # [j1+] body-shape (Codable-enforced today)
+        - IMG2IMG_REQUIRES_SOURCE           # [j1+] body-shape (Codable-enforced today)
+        - INVALID_IMAGE_DATA
+        - INVALID_MASK_DATA
+        - INVALID_REFERENCE_IMAGE_DATA
+        - INVALID_DEPTH_IMAGE_DATA
+
+        # Asset id checks (catalog membership + arch compatibility)
+        - MODEL_NOT_INSTALLED
+        - LORA_NOT_INSTALLED
+        - CONTROLNET_NOT_INSTALLED
+        - LORA_INCOMPATIBLE_WITH_BASE_MODEL
+        - CONTROLNET_INCOMPATIBLE_WITH_BASE_MODEL
+        - CONTROL_HAS_NO_PUBLIC_HINT_PATH
+        - UPSCALER_NOT_INSTALLED
+        - EMBEDDING_INCOMPATIBLE_WITH_BASE_MODEL          # [j6]
+        - VAE_INCOMPATIBLE_WITH_BASE_MODEL                # [j6]
+        - MOTION_MODULE_INCOMPATIBLE_WITH_BASE_MODEL      # [j2]
+        - MOTION_MODULE_NOT_INSTALLED                     # [j2]
+        - BASE_MODEL_DOMAIN_MISMATCH                      # 400 — txt2img on a video model, txt2vid on an image model, etc.
+        - EDITING_MODEL_REQUIRES_EDIT_ENDPOINT            # 400 — instruction-edit model sent to /v1/img2img
+        - NOT_AN_INSTRUCTION_EDIT_MODEL                   # 400 — non-edit model sent to /v1/edit
+        - OPERATION_NOT_SUPPORTED_FOR_MODEL               # 400 — the model's (behavior_class, modifier) cell doesn't list the requested op (e.g. /v1/txt2img on a .canny base)
+        - CFG_SCALE_UNSUPPORTED_FOR_DISTILLED_EDIT        # 400 — cfg_scale>1 on a guidance-distilled FLUX edit model (Kontext/Klein); would crash the engine's cond/uncond concat. Omit cfg_scale or use extensions.draw_things.guidance_embed.
+        - CONTROLNET_TASK_REQUIRES_INPUT_IMAGE            # [j6]
+        - IMG2VID_REQUIRES_CONDITIONING_IMAGE             # [j2]
+        - TXT2VID_NOT_SUPPORTED_BY_BASE_MODEL             # [j2]
+        - NUM_FRAMES_OUT_OF_RANGE_FOR_ARCHITECTURE        # [j2]
+        - VIDEO_FORMAT_NOT_SUPPORTED                      # [j2]
+        - INVALID_VIDEO_DATA                              # [j2]
+        - UNSUPPORTED_SAMPLER_FOR_ARCHITECTURE            # [j6]
+        - DIMENSIONS_NOT_MULTIPLE_OF_8                    # surfaced as VALIDATION_FAILED today
+
+        # Engine
+        - ENGINE_OOM                                      # [j6]
+        - ENGINE_TIMEOUT                                  # [j6]
+        - ENGINE_INTERNAL_ERROR
+
+        # Operator-side gating (jalon 6)
+        - READ_ONLY_MODE
+        - TOO_MANY_ACTIVE_RUNS
+
+        # Runs (cancellation, jalon 4)
+        - RUN_CANCELLED                                   # [j4] DELETE /v1/runs/{id}
+        - RUN_NOT_FOUND                                   # [j4] DELETE /v1/runs/{id} with unknown id
+
+        # Asset mutation (/v1/assets/*)
+        - ASSET_DOWNLOAD_FAILED
+        - ASSET_HASH_MISMATCH
+        - ASSET_ALREADY_INSTALLED
+        - LARGE_MODEL_DOWNLOAD            # 412 — install_size_bytes > server threshold (5 GB)
+        - ASSET_IMPORT_FAILED
+        - CATALOG_MODEL_NOT_FOUND
+        - INSTALL_NOT_SUPPORTED_FOR_TYPE
+        - INSUFFICIENT_STORAGE
+
+        # Auth (jalon 6)
+        - UNAUTHENTICATED
+        - FORBIDDEN
+
+    FieldError:
+      type: object
+      required: [field, code, message]
+      properties:
+        field:   { type: string, description: "JSON Pointer to the offending field." }
+        code:    { type: string }
+        message: { type: string }
+
+    Error:
+      description: "RFC 7807 Problem Details + typed error_code extension."
+      type: object
+      required: [type, title, status, error_code]
+      properties:
+        type:       { type: string, format: uri, default: "about:blank" }
+        title:      { type: string }
+        status:     { type: integer }
+        detail:     { type: string }
+        instance:   { type: string, format: uri }
+        error_code: { $ref: '#/components/schemas/ErrorCode' }
+        errors:
+          type: array
+          items: { $ref: '#/components/schemas/FieldError' }
+
+    RunSummary:
+      type: object
+      description: One in-flight run in the GET /v1/runs list (no preview frame).
+      required:
+        [run_id, kind, prompt, width, height, steps, started_at,
+         current_step, total_steps]
+      properties:
+        run_id: { type: string }
+        kind:
+          type: string
+          enum: [compose, edit, restore, pipeline]
+        prompt: { type: string }
+        width:  { type: integer }
+        height: { type: integer }
+        steps:  { type: integer }
+        started_at: { type: string, format: date-time }
+        current_step:
+          type: integer
+          description: "Diffusion step reached; 0 while the run waits for the engine."
+        total_steps:
+          type: integer
+          description: "0 until the first progress tick arrives."
+
+    RunDetail:
+      type: object
+      description: >
+        One run from GET /v1/runs/{run_id} — the RunSummary fields plus the
+        latest live-preview frame.
+      required:
+        [run_id, kind, prompt, width, height, steps, started_at,
+         current_step, total_steps]
+      properties:
+        run_id: { type: string }
+        kind:
+          type: string
+          enum: [compose, edit, restore, pipeline]
+        prompt: { type: string }
+        width:  { type: integer }
+        height: { type: integer }
+        steps:  { type: integer }
+        started_at: { type: string, format: date-time }
+        current_step: { type: integer }
+        total_steps:  { type: integer }
+        preview_png_base64:
+          type: string
+          nullable: true
+          description: >
+            Latest live-preview frame, base64-encoded PNG. Null until the
+            engine emits the first preview.
+
+    # ──────────────────── Capability map (v0) ─────────────────────
+
+    Operation:
+      type: string
+      description: |
+        **Semantic** generation operation surfaced by `/v1/capabilities/{model_id}`
+        — NOT a URL. Independent of which model is chosen; the capability
+        map declares which operations a given `(architecture, modifier)`
+        supports. Map each operation to the corresponding URL verb when
+        building a request:
+
+        | Operation | URL verb     | Notes                                             |
+        |-----------|--------------|---------------------------------------------------|
+        | `txt2img` | `/v1/compose`| no `from`                                         |
+        | `img2img` | `/v1/compose`| `from.image` set                                  |
+        | `inpaint` | `/v1/edit`   | `mask` set                                        |
+        | `edit`    | `/v1/edit`   | no `mask` (instruction-edit models)               |
+        | `txt2vid` | `/v1/compose`| no `from`, video model, `params.video.num_frames` |
+        | `img2vid` | `/v1/compose`| `from.image` set, video model                     |
+        | `restore` | `/v1/restore`| seedvr2-class models                              |
+
+        Each `Contract.example` carries the resolved endpoint and a copy-
+        paste body; the URL surface is intentionally smaller than the
+        operation taxonomy (three verbs, seven operations).
+      enum:
+        - txt2img
+        - img2img
+        - inpaint
+        - edit
+        - txt2vid
+        - img2vid
+        - restore
+
+    BehaviorClass:
+      type: string
+      description: |
+        Quotient over `Architecture` that groups variants the SDK branches
+        identically. Keyed with `Modifier`, it is the row dimension of the
+        capability map. `null` in `CapabilitiesResponse.behavior_class`
+        means the model is a non-callable engine stage (SDXL refiner,
+        Stable Cascade decoder).
+      enum:
+        - sd1x
+        - kandinsky21
+        - sdxl
+        - stableCascade
+        - sd3
+        - pixart
+        - auraflow
+        - flux1
+        - flux2
+        - hidream
+        - qwenImage
+        - zImage
+        - ernieImage
+        - cosmos2
+        - seedvr2
+        - svdI2v
+        - hunyuanVideo
+        - wan21
+        - wan22
+        - ltx2
+
+    Modifier:
+      type: string
+      description: |
+        1:1 mirror of the engine's `SamplerModifier` raw strings. Carries
+        the same values; never diverges.
+      enum:
+        - none
+        - inpainting
+        - depth
+        - editing
+        - double
+        - canny
+        - kontext
+        - qwenimage_edit_plus
+        - qwenimage_layered
+        - qwenimage_edit_2511
+        - kontext_kv
+
+    FieldConstraint:
+      type: object
+      description: |
+        Per-field constraint inside `Contract.accepted`. The `type` key
+        discriminates which other keys are present.
+      required: [type]
+      properties:
+        type:
+          type: string
+          enum: [bool, int, int64, float, string, base64, array, object]
+        min:
+          oneOf:
+            - { type: integer }
+            - { type: number }
+          description: Lower bound (int / int64 / float kinds).
+        max:
+          oneOf:
+            - { type: integer }
+            - { type: number }
+          description: Upper bound (int / int64 / float kinds).
+        multiple_of:
+          type: integer
+          description: Must be a multiple of this value (int kind).
+        exclusive_min:
+          type: boolean
+          description: If true, `min` is exclusive (float kind).
+        exclusive_max:
+          type: boolean
+          description: If true, `max` is exclusive (float kind).
+        max_length:
+          type: integer
+          description: Max character length (string kind).
+        enum:
+          type: array
+          items: { type: string }
+          description: Allowed values (string kind).
+        items_ref:
+          type: string
+          description: Schema name of the array's element (array kind).
+        ref:
+          type: string
+          description: Schema name of the object (object kind).
+        required:
+          type: boolean
+          description: |
+            If true, the field must be present in the request body.
+            Default false.
+
+    SilentDrop:
+      type: object
+      description: |
+        A field a caller can submit but that the engine ignores for this
+        `(model, operation)`. Present in `Contract.silent_drops`. The
+        wrapper emits a warning at runtime when such a field is sent.
+      required: [field, reason]
+      properties:
+        field:
+          type: string
+          description: |
+            Dotted JSON-path of the field
+            (e.g. `extensions.draw_things.tea_cache`).
+        reason:
+          type: string
+
+    Refused:
+      type: object
+      description: |
+        A field whose mere presence in the request body causes a typed
+        400. Present in `Contract.refused`.
+      required: [field, error_code]
+      properties:
+        field:
+          type: string
+        error_code:
+          type: string
+
+    Contract:
+      type: object
+      description: |
+        Per-`(model_id, operation)` input contract. `accepted` lists the
+        canonical knobs and their constraints. `silent_drops` enumerates
+        fields a caller might plausibly send but that the engine ignores
+        for this cell — not exhaustive, covers the gotchas. `refused`
+        enumerates field-level typed-400 triggers; op-level refusals are
+        handled by the op not appearing at all in
+        `CapabilitiesResponse.operations`. `example` carries a minimal
+        valid request body shaped for the semantic-API endpoint
+        corresponding to the Operation.
+      required:
+        - model_id
+        - operation
+        - engine_version
+        - behavior_class
+        - modifier
+        - accepted
+        - silent_drops
+        - refused
+        - notes
+      properties:
+        model_id:
+          type: string
+        operation:
+          $ref: '#/components/schemas/Operation'
+        engine_version:
+          type: string
+        behavior_class:
+          $ref: '#/components/schemas/BehaviorClass'
+        modifier:
+          $ref: '#/components/schemas/Modifier'
+        accepted:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/FieldConstraint'
+          description: |
+            Dict keyed by field name (snake_case, dotted path for nested
+            fields) → constraint.
+        silent_drops:
+          type: array
+          items: { $ref: '#/components/schemas/SilentDrop' }
+        refused:
+          type: array
+          items: { $ref: '#/components/schemas/Refused' }
+        notes:
+          type: array
+          items: { type: string }
+        example:
+          allOf: [{ $ref: '#/components/schemas/ContractExample' }]
+          description: |
+            Optional. Hand-written one-per-Operation example. Agents copy
+            the body, substitute the `<...>` placeholders, and POST to the
+            indicated `endpoint`.
+
+    CapabilitiesResponse:
+      type: object
+      description: |
+        Body of `GET /v1/capabilities/{model_id}`. `behavior_class` is
+        nullable: a non-callable engine stage (SDXL refiner, Stable
+        Cascade decoder) carries `null` and an empty `operations` list,
+        with an explanatory entry in `notes`.
+      required:
+        - model_id
+        - engine_version
+        - architecture
+        - behavior_class
+        - modifier
+        - operations
+        - notes
+      properties:
+        model_id:
+          type: string
+        engine_version:
+          type: string
+        architecture:
+          type: string
+          description: |
+            Raw `ModelVersion` of the spec. Informative; the keying axis
+            is `behavior_class`, not this string.
+        behavior_class:
+          allOf: [{ $ref: '#/components/schemas/BehaviorClass' }]
+          nullable: true
+        modifier:
+          $ref: '#/components/schemas/Modifier'
+        operations:
+          type: array
+          items: { $ref: '#/components/schemas/Contract' }
+          description: |
+            One entry per operation the `(architecture, modifier)` cell
+            supports. Empty when `behavior_class` is null, or when v0 has
+            no contract for the cell.
+        notes:
+          type: array
+          items: { type: string }
+          description: |
+            Human-readable explanation when `operations` is empty or
+            constrained.
+
+  responses:
+    ErrorResponse:
+      description: Typed error
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+    NotAcceptableMultiResult:
+      description: >-
+        A binary body was requested (`Accept: image/*` or `video/*`) for a
+        request that produced more than one result; a raw body carries only
+        one. `error_code` is `BINARY_RESPONSE_IS_SINGLE_RESULT_ONLY`. Drop the
+        binary `Accept` for the JSON envelope, or set `batch_size` and
+        `batch_count` to 1.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+    ImageGenerationOK:
+      description: >-
+        Successful image generation. Representation depends on the request:
+        the JSON envelope by default; raw image bytes when `Accept` is
+        `image/png`, `image/jpeg`, or `application/octet-stream` (single-result
+        requests only — see 406); an SSE stream when `stream=true`. `Accept`
+        only toggles JSON vs binary — the encoding stays governed by
+        `output_format`. `X-DHT-Recipe` is set on JSON AND binary responses;
+        the other `X-DHT-*` headers appear only on the raw-bytes
+        representation (the JSON envelope carries the same data inline).
+      headers:
+        X-DHT-Recipe: { $ref: '#/components/headers/X-DHT-Recipe' }
+        X-DHT-Run-Id: { $ref: '#/components/headers/X-DHT-Run-Id' }
+        X-DHT-Seed: { $ref: '#/components/headers/X-DHT-Seed' }
+        X-DHT-Generation-Time-Ms: { $ref: '#/components/headers/X-DHT-Generation-Time-Ms' }
+        X-DHT-Engine-Version: { $ref: '#/components/headers/X-DHT-Engine-Version' }
+        X-DHT-Warnings: { $ref: '#/components/headers/X-DHT-Warnings' }
+        X-DHT-Applied-Defaults: { $ref: '#/components/headers/X-DHT-Applied-Defaults' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ImageGenerationResponse' }
+        image/png:
+          schema: { type: string, format: binary }
+        image/jpeg:
+          schema: { type: string, format: binary }
+        text/event-stream:
+          schema:
+            oneOf:
+              - $ref: '#/components/schemas/SSEEventProgress'
+              - $ref: '#/components/schemas/SSEEventDone'
+              - $ref: '#/components/schemas/SSEEventError'
+
+    VideoGenerationOK:
+      description: >-
+        Successful video generation. Representation depends on the request:
+        the JSON envelope by default; raw `video/mp4` bytes when `Accept` is
+        `video/mp4` or `application/octet-stream` (single-result requests only
+        — see 406); an SSE stream when `stream=true`. `X-DHT-Recipe` is set
+        on JSON AND binary responses; the other `X-DHT-*` headers appear only
+        on the raw-bytes representation.
+      headers:
+        X-DHT-Recipe: { $ref: '#/components/headers/X-DHT-Recipe' }
+        X-DHT-Run-Id: { $ref: '#/components/headers/X-DHT-Run-Id' }
+        X-DHT-Seed: { $ref: '#/components/headers/X-DHT-Seed' }
+        X-DHT-Generation-Time-Ms: { $ref: '#/components/headers/X-DHT-Generation-Time-Ms' }
+        X-DHT-Engine-Version: { $ref: '#/components/headers/X-DHT-Engine-Version' }
+        X-DHT-Warnings: { $ref: '#/components/headers/X-DHT-Warnings' }
+        X-DHT-Applied-Defaults: { $ref: '#/components/headers/X-DHT-Applied-Defaults' }
+        X-DHT-Width: { $ref: '#/components/headers/X-DHT-Width' }
+        X-DHT-Height: { $ref: '#/components/headers/X-DHT-Height' }
+        X-DHT-Num-Frames: { $ref: '#/components/headers/X-DHT-Num-Frames' }
+        X-DHT-Fps: { $ref: '#/components/headers/X-DHT-Fps' }
+        X-DHT-Duration-Ms: { $ref: '#/components/headers/X-DHT-Duration-Ms' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/VideoGenerationResponse' }
+        video/mp4:
+          schema: { type: string, format: binary }
+        text/event-stream:
+          schema:
+            oneOf:
+              - $ref: '#/components/schemas/SSEEventProgress'
+              - $ref: '#/components/schemas/SSEEventVideoGenerationDone'
+              - $ref: '#/components/schemas/SSEEventError'
+
+    PipelineOK:
+      description: >-
+        Successful pipeline run. JSON envelope only — pipelines never
+        return raw bytes (multiple outputs would have to be multipart and
+        v0 hasn't shipped that yet). Carries `X-DHT-Recipe` with the full
+        `PipelineRequest` so the run is reproducible.
+      headers:
+        X-DHT-Recipe: { $ref: '#/components/headers/X-DHT-Recipe' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/PipelineResponse' }
+
+  headers:
+    X-DHT-Recipe:
+      description: >-
+        Base64-encoded JSON of the canonical recipe that produced this
+        response. For verb endpoints (`compose`/`edit`/`restore`), the
+        body is the request payload with the `via` discriminator
+        injected and applied defaults folded into `params` — re-postable
+        to `/v1/<verb>`. For `/v1/pipeline`, the body is the full
+        `PipelineRequest` as submitted. Inline image payloads
+        (`from.image`, `guides[].image`, `references[].image`,
+        `reference_image`, `depth_image`, `mask`) are stripped to
+        `sha256:<hex>;bytes=<n>` digest references to keep the header
+        under the HTTP header-line limit; re-attach the same bytes
+        (keyed by digest) when re-posting. Omitted entirely if the recipe
+        is still too large after stripping (~32 KB). Set on JSON AND
+        binary representations of every successful generation response;
+        not set on SSE (the `done` payload carries the metadata inline).
+        Reproducibility unit: same recipe + same seed → same bytes.
+      schema: { type: string, format: byte }
+    X-DHT-Run-Id:
+      description: Run id of this generation.
+      schema: { type: string }
+    X-DHT-Seed:
+      description: Effective seed (image response seed, or the single video's seed).
+      schema: { type: string }
+    X-DHT-Generation-Time-Ms:
+      description: Wall-clock generation time, milliseconds.
+      schema: { type: string }
+    X-DHT-Engine-Version:
+      description: Pinned draw-things-community engine version.
+      schema: { type: string }
+    X-DHT-Warnings:
+      description: >-
+        Base64-encoded JSON array of Diagnostic — the engine-quirk warnings
+        otherwise at `metadata.warnings`. Omitted when there are none.
+      schema: { type: string }
+    X-DHT-Applied-Defaults:
+      description: >-
+        Base64-encoded JSON array of AppliedDefault — otherwise at
+        `metadata.applied_defaults`. Omitted when there are none.
+      schema: { type: string }
+    X-DHT-Width:
+      description: Video frame width in pixels (video routes only).
+      schema: { type: string }
+    X-DHT-Height:
+      description: Video frame height in pixels (video routes only).
+      schema: { type: string }
+    X-DHT-Num-Frames:
+      description: Frame count of the video (video routes only).
+      schema: { type: string }
+    X-DHT-Fps:
+      description: Frames per second (video routes only).
+      schema: { type: string }
+    X-DHT-Duration-Ms:
+      description: Video duration in milliseconds (video routes only).
+      schema: { type: string }
+
+  parameters:
+    AssetTypeFilter:
+      name: type
+      in: query
+      schema: { $ref: '#/components/schemas/AssetType' }
+    ArchitectureFilter:
+      name: architecture
+      in: query
+      schema: { $ref: '#/components/schemas/Architecture' }
+    DomainFilter:
+      name: domain
+      in: query
+      schema: { $ref: '#/components/schemas/Domain' }
+    ControlNetTaskFilter:
+      name: task
+      in: query
+      schema: { $ref: '#/components/schemas/ControlNetTask' }
+    DownloadedFilter:
+      name: downloaded
+      in: query
+      schema: { type: boolean, default: true }
+      description: |
+        Which assets to list:
+          - `true` (default) — only assets present on disk. This is why a
+            fresh listing looks short.
+          - `false` — the whole catalogue, installed and not. Every entry
+            carries a `downloaded` boolean; the `downloaded: false` rows are
+            the installable ones (the SDK's ModelZoo knows their URL).
+    StreamFlag:
+      name: stream
+      in: query
+      schema: { type: boolean, default: false }
+      description: "If true, response is `text/event-stream` instead of JSON."
+
+# ─────────────────────────────── Paths ────────────────────────────────
+
+paths:
+
+  /mcp:
+    post:
+      summary: Model Context Protocol endpoint (Streamable HTTP)
+      operationId: postMCP
+      description: |
+        JSON-RPC 2.0 endpoint implementing the Model Context Protocol
+        (spec revision 2025-11-25, Streamable HTTP transport). This is **not**
+        a REST resource and is deliberately not modelled field-by-field here:
+        the MCP surface is introspective — a client discovers the available
+        tools and their JSON schemas at runtime via the `tools/list` method.
+
+        The request body is a single JSON-RPC object. A `tools/call` that
+        carries a `_meta.progressToken` and whose caller accepts
+        `text/event-stream` is answered as an SSE stream (progress
+        notifications, then the JSON-RPC response); every other request is
+        answered as one `application/json` body. A notification (no `id`) is
+        acknowledged with `202 Accepted`.
+
+        **Parity with the REST surface.** The tool catalog mirrors the REST
+        routes one-for-one: the verbs `compose` / `edit` / `restore`, their
+        `resolve_<verb>` dry-runs, `pipeline`, `get_capabilities`
+        (= `GET /v1/capabilities/{model_id}`), run introspection `list_runs` /
+        `get_run` (= `GET /v1/runs`, `GET /v1/runs/{run_id}`), and the asset
+        tools `list_assets` / `get_asset` / `install_asset` / `delete_asset`.
+        Successful generation results carry the same canonical, re-postable
+        recipe as the REST `X-DHT-Recipe` header — emitted as a final `Recipe:`
+        text block, image payloads redacted to the same `sha256:<hex>;bytes=<n>`
+        digest references. Run cancellation is the MCP `notifications/cancelled`
+        mechanism (= `DELETE /v1/runs/{run_id}`). The wrapped engine build is
+        reported as `serverInfo.engineVersion` in the `initialize` reply
+        (= `GET /v1/info`'s `engine_version`).
+
+        Sits behind the same bearer auth as the REST routes. See the in-app
+        MCP setup page for connection details.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: A JSON-RPC 2.0 request, notification, or response object.
+      responses:
+        '200':
+          description: JSON-RPC response — `application/json` or `text/event-stream`.
+        '202':
+          description: Notification accepted; no response body.
+        '400':
+          description: Request body is not a JSON-RPC object.
+    get:
+      summary: MCP endpoint (server→client stream)
+      operationId: getMCP
+      description: |
+        The Streamable HTTP transport permits a standalone SSE stream for
+        server-initiated messages. This server sends none, so `GET /mcp`
+        returns `405 Method Not Allowed`, which the spec allows.
+      responses:
+        '405':
+          description: No server-initiated stream is offered.
+
+  /health:
+    get:
+      summary: Liveness probe
+      operationId: getHealth
+      description: |
+        Returns `200 {"status":"ok"}` whenever the process is up and routing.
+        **Auth-exempt** — unlike every other route, `GET /health` does not
+        require a bearer token even when the server is bound `public`, so a
+        supervisor (launchd `KeepAlive`, the menu-bar app, an uptime monitor)
+        can probe it without credentials. The server is stateless, so there is
+        no readiness gate beyond "listening": no model is loaded at startup and
+        there is no backing store to check.
+      security: []
+      responses:
+        '200':
+          description: The server is up and routing.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string, enum: [ok] }
+
+  /v1/info:
+    get:
+      summary: API and engine version
+      operationId: getInfo
+      description: |
+        Returns the API version and the embedded engine version. Both
+        fields are always present.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [api_version, engine_version]
+                properties:
+                  api_version:    { type: string }
+                  engine_version: { type: string }
+
+  /v1/assets:
+    get:
+      summary: List assets — installed, or the whole installable catalogue
+      operationId: listAssets
+      description: |
+        Lists assets. By default (`downloaded=true`) only assets present on
+        disk are returned — that is why a fresh listing looks short.
+
+        To discover **installable** models, pass `downloaded=false`: the
+        response then includes the full catalogue, and every entry carries a
+        `downloaded` boolean. The `downloaded: false` rows are what the
+        server can fetch.
+
+        Catalogue install works for **base models only** (an SDK limitation:
+        the resolver covers base models, not LoRA / ControlNet / etc.). So
+        the practical "what can I install now" query is:
+
+        ```
+        GET /v1/assets?downloaded=false&type=base_model
+        ```
+
+        and the `downloaded: false` rows there install via
+        `POST /v1/assets/install` with `source.type=catalog` (pass the asset
+        `id` as `source.model`). Non-base types install only from a local
+        file (`source.type=local_file`).
+      parameters:
+        - $ref: '#/components/parameters/AssetTypeFilter'
+        - $ref: '#/components/parameters/ArchitectureFilter'
+        - $ref: '#/components/parameters/DomainFilter'
+        - $ref: '#/components/parameters/ControlNetTaskFilter'
+        - $ref: '#/components/parameters/DownloadedFilter'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Asset' }
+
+  /v1/assets/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      summary: Fetch one asset
+      operationId: getAsset
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Asset' }
+        '404':
+          $ref: '#/components/responses/ErrorResponse'
+    delete:
+      summary: Uninstall an asset (deletes the local file)
+      description: |
+        Deletes the asset's primary file and any `*-tensordata`
+        companion, plus any files in `filesToDownload(spec)` that are
+        not also needed by another installed asset. Custom-registry
+        entries (custom.json / custom_lora.json) for the deleted file
+        are pruned so re-install starts clean. Built-in catalog specs
+        survive — the asset will reappear in listings as `downloaded: false`.
+
+        Error codes: `MODEL_NOT_INSTALLED` (404); `READ_ONLY_MODE` (403,
+        when the server runs with `--read-only`); `FORBIDDEN` (403, when
+        a resolved file path falls outside any configured external
+        models directory — defense in depth against path traversal).
+      operationId: deleteAsset
+      responses:
+        '204': { description: Deleted }
+        '403': { $ref: '#/components/responses/ErrorResponse' }
+        '404': { $ref: '#/components/responses/ErrorResponse' }
+
+  /v1/assets/install:
+    post:
+      summary: Install an asset from the catalog or a local file
+      description: |
+        Install sources:
+        - `source.type=catalog`: downloads a model the SDK's ModelZoo
+          catalogue knows, plus its dependencies. **Base models only** — the
+          catalogue resolver does not cover LoRA / ControlNet / etc. Find
+          installable ids with `GET /v1/assets?downloaded=false&type=base_model`
+          and read the `downloaded: false` rows; pass that asset's `id` as
+          `source.model`.
+        - `source.type=local_file`: side-loads a local file. LoRA only
+          (uses the `LoRAImporter` conversion pipeline; the destination
+          file is named `<sanitized_name>_lora_f16.ckpt` in the models dir
+          and a custom_lora.json entry is registered).
+
+        Error codes: `VALIDATION_FAILED` (400), `INSTALL_NOT_SUPPORTED_FOR_TYPE`
+        (400), `LARGE_MODEL_DOWNLOAD` (412), `CATALOG_MODEL_NOT_FOUND`
+        (404), `ASSET_ALREADY_INSTALLED` (409), `ASSET_IMPORT_FAILED` (422),
+        `ASSET_DOWNLOAD_FAILED` (502), `ASSET_HASH_MISMATCH` (502),
+        `INSUFFICIENT_STORAGE` (507).
+
+        **`?stream=true`** switches the response to `text/event-stream`:
+        ```
+        event: resolving
+        data: {}
+
+        event: verifying
+        data: {"file":"...","file_index":1,"total_files":4}
+
+        event: progress
+        data: {"file":"...","file_index":1,"total_files":4,
+               "bytes_written":12345678,"total_bytes_expected":21012758528}
+
+        ...
+
+        event: done
+        data: {<Asset>}
+        ```
+        On failure: a single `event: error` with the same `error_code`
+        taxonomy as the non-streaming path (LARGE_MODEL_DOWNLOAD,
+        ASSET_ALREADY_INSTALLED, ASSET_DOWNLOAD_FAILED, …) and HTTP 200
+        as the response status (the error is in the event payload, not
+        the HTTP status — same convention as the generation SSE routes).
+      operationId: installAsset
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InstallAssetRequest' }
+      responses:
+        '200':
+          description: Installed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Asset' }
+        '400': { $ref: '#/components/responses/ErrorResponse' }
+        '403':
+          description: Server is running in read-only mode (`READ_ONLY_MODE`)
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404': { $ref: '#/components/responses/ErrorResponse' }
+        '409': { $ref: '#/components/responses/ErrorResponse' }
+        '412': { $ref: '#/components/responses/ErrorResponse' }
+        '422': { $ref: '#/components/responses/ErrorResponse' }
+        '502': { $ref: '#/components/responses/ErrorResponse' }
+        '507': { $ref: '#/components/responses/ErrorResponse' }
+
+  /v1/capabilities/{model_id}:
+    parameters:
+      - name: model_id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      summary: Get the input contracts for a model
+      operationId: getCapabilities
+      description: |
+        Returns the list of operations the given base model supports, with
+        per-operation contracts:
+        - `accepted`: the canonical knobs and their constraints,
+        - `silent_drops`: fields a caller can send but the engine ignores
+          for this `(model, operation)` cell,
+        - `refused`: fields whose presence triggers a typed 400.
+
+        Read this before building a generation request to know what the
+        engine will actually consume for your `(model, operation)`. The
+        wire surface (e.g. `/v1/txt2img`) is then called as usual; the
+        capability contract is the spec the request should obey.
+
+        Non-callable engine stages (SDXL refiner, Stable Cascade decoder)
+        respond `200` with `behavior_class: null`, `operations: []` and a
+        `notes` entry explaining why.
+
+        Error code: `MODEL_NOT_INSTALLED` (404, when the model_id is not
+        in the catalog).
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CapabilitiesResponse' }
+        '404':
+          $ref: '#/components/responses/ErrorResponse'
+
+  /v1/runs:
+    get:
+      summary: List in-flight generation runs
+      operationId: listRuns
+      description: |
+        Every generation (`/v1/txt2img`, `/v1/img2img`, … — streamed or
+        not) registers here while it runs and is removed when it finishes.
+        The engine serialises generation, so at most one run is actually
+        executing: the one whose `current_step` is advancing. The others,
+        still at `current_step: 0`, are waiting their turn — so the queue
+        depth is the count of runs with `current_step == 0`.
+
+        Light payload (no preview frame), safe to poll. For the live preview
+        image of a run, fetch `GET /v1/runs/{run_id}`.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [runs]
+                properties:
+                  runs:
+                    type: array
+                    items: { $ref: '#/components/schemas/RunSummary' }
+
+  /v1/runs/{run_id}:
+    parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      summary: Fetch one in-flight run, with its live preview frame
+      operationId: getRun
+      description: |
+        Same fields as the `/v1/runs` list entry, plus `preview_png_base64`:
+        the latest decoded preview image as a base64 PNG. The engine emits a
+        preview periodically (not every step), so the field is null until
+        the first one arrives. Returns 404 once the run has finished.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RunDetail' }
+        '404':
+          $ref: '#/components/responses/ErrorResponse'
+    delete:
+      summary: Cancel an in-progress run
+      description: |
+        Cancels a generation that is currently running. The run_id must
+        match a value the client supplied in the body of an active
+        request. Once the cancellation is acknowledged the original
+        request returns HTTP `499` (nginx-style "Client Closed Request",
+        non-RFC) with an `Error` body carrying
+        `error_code: RUN_CANCELLED`.
+
+        Returns 404 if no active run matches (already completed, or
+        never registered).
+      operationId: cancelRun
+      responses:
+        '204': { description: Cancellation acknowledged }
+        '404': { $ref: '#/components/responses/ErrorResponse' }
+
+  /v1/compose:
+    post:
+      summary: Produce an image or video — the chosen model's domain decides
+      description: |
+        Three dispatch cells based on `(from, domain)`:
+
+        - `(null,  image-model)` → text-to-image (legacy `txt2img` path)
+        - `(image, image-model)` → image-to-image (legacy `img2img` path,
+          `params.denoising_strength` defaults to `0.7`)
+        - `(null,  video-model)` → text-to-video (legacy `txt2vid` path,
+          requires `params.video.num_frames`)
+        - `(image, video-model)` → image-to-video (legacy `img2vid` path,
+          requires `params.video.num_frames`,
+          `params.conditioning_strength` opt-in)
+
+        `from` is a *guide*, not a target — the engine may diverge freely.
+        `from.via` nests a sub-recipe; its output bytes pipe into this
+        compose. `from: "$step_label"` is only valid inside `/v1/pipeline`.
+
+        Returns `image/png` (or `image/jpeg` per `params.output_format`)
+        when `Accept` is `image/*`; `video/mp4` when `Accept` is
+        `video/mp4`; the JSON envelope otherwise. `?stream=true` switches
+        to `text/event-stream`. Every successful response carries
+        `X-DHT-Recipe` — the canonical, re-postable JSON of this body
+        with `via` injected and applied defaults folded into `params`
+        (inline image bytes stripped to digest references; see the header
+        definition).
+      operationId: compose
+      parameters:
+        - $ref: '#/components/parameters/StreamFlag'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ComposeRequest' }
+            examples:
+              text_to_image:
+                summary: Text-to-image
+                value:
+                  model: "sdxl-base-1.0"
+                  prompt: "a misty forest at dawn, cinematic"
+                  params:
+                    width: 1024
+                    height: 1024
+                    steps: 30
+              image_to_image:
+                summary: Image-to-image
+                value:
+                  model: "sdxl-base-1.0"
+                  prompt: "oil-painting style, warm light"
+                  from:
+                    image: "<base64 source image>"
+                  params:
+                    width: 1024
+                    height: 1024
+                    steps: 30
+                    denoising_strength: 0.6
+              text_to_video:
+                summary: Text-to-video (Wan 2.2)
+                value:
+                  model: "wan-2.2-i2v-14b"
+                  prompt: "drone shot over a glacier, golden hour"
+                  params:
+                    width: 832
+                    height: 480
+                    steps: 30
+                    video:
+                      num_frames: 81
+                      fps: 24
+              image_to_video:
+                summary: Image-to-video (Wan 2.2, conditioned on a still)
+                value:
+                  model: "wan-2.2-i2v-14b"
+                  prompt: "the still scene comes alive, gentle camera dolly"
+                  from:
+                    image: "<base64 source image>"
+                  params:
+                    width: 832
+                    height: 480
+                    steps: 30
+                    conditioning_strength: 0.8
+                    video:
+                      num_frames: 81
+                      fps: 24
+      responses:
+        '200': { $ref: '#/components/responses/ImageGenerationOK' }
+        '400': { $ref: '#/components/responses/ErrorResponse' }
+        '406': { $ref: '#/components/responses/NotAcceptableMultiResult' }
+        '422': { $ref: '#/components/responses/ErrorResponse' }
+        '499':
+          description: Run was cancelled via DELETE /v1/runs/{run_id} (non-streaming path only; nginx-style "Client Closed Request", non-RFC)
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503': { $ref: '#/components/responses/ErrorResponse' }
+        '500': { $ref: '#/components/responses/ErrorResponse' }
+
+  /v1/edit:
+    post:
+      summary: Preserve-and-change an image
+      description: |
+        Two dispatch cells based on `mask`:
+
+        - `mask == null` → instruction-edit path (target as `.moodboard()`,
+          engine generates from pure noise steered by `instruction`).
+          Requires an instruction-edit base model (Flux Kontext,
+          Qwen-Image-Edit; `editing_mode == instruction_edit`); other
+          models return `NOT_AN_INSTRUCTION_EDIT_MODEL` (400).
+        - `mask != null` → inpaint path (source + mask, non-zero pixels
+          mark the regen region; `params.denoising_strength` defaults
+          to `1.0`).
+
+        `references[]` add extra context images, each carried as a
+        `.moodboard()` hint with an optional `role` tag.
+
+        Guidance-distilled FLUX edit models (Kontext / Klein) bake guidance
+        in and have no unconditional branch: an explicit `params.cfg_scale > 1`
+        returns `CFG_SCALE_UNSUPPORTED_FOR_DISTILLED_EDIT` (400) — it would
+        otherwise crash the engine's cond/uncond concat. Omit `cfg_scale`
+        (or set `1`) and steer adherence with
+        `extensions.draw_things.guidance_embed`.
+
+        `?stream=true`, `Accept` toggles, `X-DHT-Recipe` work as on
+        `/v1/compose`.
+      operationId: edit
+      parameters:
+        - $ref: '#/components/parameters/StreamFlag'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EditRequest' }
+            examples:
+              instruction_edit:
+                summary: Instruction-edit (Flux Kontext)
+                value:
+                  model: "flux_kontext_dev"
+                  from:
+                    image: "<base64 source image>"
+                  instruction: "remove the text overlay, keep everything else"
+                  params:
+                    width: 1024
+                    height: 1024
+                    steps: 30
+              inpaint:
+                summary: Inpaint (mask + denoise)
+                value:
+                  model: "sdxl-inpainting-1.0"
+                  from:
+                    image: "<base64 source image>"
+                  mask: "<base64 mask — non-zero pixels = regen>"
+                  instruction: "a wooden park bench in the empty area"
+                  params:
+                    width: 1024
+                    height: 1024
+                    steps: 30
+      responses:
+        '200': { $ref: '#/components/responses/ImageGenerationOK' }
+        '400': { $ref: '#/components/responses/ErrorResponse' }
+        '406': { $ref: '#/components/responses/NotAcceptableMultiResult' }
+        '422': { $ref: '#/components/responses/ErrorResponse' }
+        '499':
+          description: Run was cancelled via DELETE /v1/runs/{run_id} (non-streaming path only; nginx-style "Client Closed Request", non-RFC)
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503': { $ref: '#/components/responses/ErrorResponse' }
+        '500': { $ref: '#/components/responses/ErrorResponse' }
+
+  /v1/restore:
+    post:
+      summary: Preserve-and-enhance — same content, higher fidelity
+      description: |
+        Runs an SR / restoration pipeline keyed by the model (currently
+        `seedvr2_3b` / `seedvr2_7b`). Empty prompt — no creative liberty.
+      operationId: restore
+      parameters:
+        - $ref: '#/components/parameters/StreamFlag'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RestoreRequest' }
+            examples:
+              seedvr2:
+                summary: SeedVR2 upscale
+                value:
+                  model: "seedvr2_3b"
+                  from:
+                    image: "<base64 source image>"
+                  params:
+                    width: 1024
+                    height: 1024
+                    steps: 20
+      responses:
+        '200': { $ref: '#/components/responses/ImageGenerationOK' }
+        '400': { $ref: '#/components/responses/ErrorResponse' }
+        '406': { $ref: '#/components/responses/NotAcceptableMultiResult' }
+        '422': { $ref: '#/components/responses/ErrorResponse' }
+        '499':
+          description: Run was cancelled via DELETE /v1/runs/{run_id} (non-streaming path only; nginx-style "Client Closed Request", non-RFC)
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503': { $ref: '#/components/responses/ErrorResponse' }
+        '500': { $ref: '#/components/responses/ErrorResponse' }
+
+  /v1/pipeline:
+    post:
+      summary: Run an ordered chain of compose / edit / restore recipes
+      description: |
+        Stateless. Each step is a `Recipe` with an optional `as` label;
+        later steps reference an earlier step's image output via
+        `"$<as>"` in their `from`, `references[].image`, or
+        `guides[].image`. `return` controls which step outputs come back
+        (defaults to the last step under the implicit key `"result"`).
+
+        Sub-recipes that produce video raise
+        `RECIPE_PRODUCED_VIDEO_OUTPUT` — only image bytes chain through
+        the pipeline in v0.
+
+        The full `PipelineRequest` is echoed back in `X-DHT-Recipe`,
+        making the run reproducible.
+      operationId: pipeline
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PipelineRequest' }
+            examples:
+              compose_then_edit:
+                summary: Compose then edit (single returned output)
+                value:
+                  steps:
+                    - as: base
+                      via: compose
+                      model: "sdxl-base-1.0"
+                      prompt: "a portrait of a cat"
+                      params: { width: 1024, height: 1024, steps: 30 }
+                    - as: edited
+                      via: edit
+                      model: "flux_kontext_dev"
+                      from: "$base"
+                      instruction: "make it black-and-white"
+                      params: { width: 1024, height: 1024, steps: 30 }
+                  return: ["edited"]
+      responses:
+        '200': { $ref: '#/components/responses/PipelineOK' }
+        '400': { $ref: '#/components/responses/ErrorResponse' }
+        '499':
+          description: Run was cancelled via DELETE /v1/runs/{run_id}
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503': { $ref: '#/components/responses/ErrorResponse' }
+        '500': { $ref: '#/components/responses/ErrorResponse' }
+
+  /v1/resolve/compose:
+    post:
+      summary: Dry-run a compose request
+      description: |
+        Validate the body, surface engine-quirk warnings, list the Core
+        defaults the engine would fill in, return an estimated
+        compute-units cost. Side-effect-free — no diffusion is run.
+        Always returns `200` with a `ResolveResponse` body (errors
+        populate `errors[]` rather than raising HTTP 4xx). The same
+        `warnings` + `applied_defaults` also come back in `RunMetadata`
+        on every generation response — resolve is opt-in, not a gate.
+      operationId: resolveCompose
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ComposeRequest' }
+      responses:
+        '200':
+          description: OK (even when `errors[]` is non-empty)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ResolveResponse' }
+
+  /v1/resolve/edit:
+    post:
+      summary: Dry-run an edit request
+      operationId: resolveEdit
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EditRequest' }
+      responses:
+        '200':
+          description: OK (even when `errors[]` is non-empty)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ResolveResponse' }
+
+  /v1/resolve/restore:
+    post:
+      summary: Dry-run a restore request
+      operationId: resolveRestore
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RestoreRequest' }
+      responses:
+        '200':
+          description: OK (even when `errors[]` is non-empty)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ResolveResponse' }
