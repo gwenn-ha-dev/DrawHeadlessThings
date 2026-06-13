@@ -128,7 +128,7 @@ extension TypedError {
         status: .badRequest, errorCode: "INSTALL_NOT_SUPPORTED_FOR_TYPE",
         title: "local_file install not supported for this asset type",
         detail:
-          "phase B supports local_file install for type 'lora' only; got '\(type.rawValue)'")
+          "local_file install supports types 'lora' and 'base_model'; got '\(type.rawValue)'")
     case .importFailed(let detail):
       return TypedError(
         status: .unprocessableContent, errorCode: "ASSET_IMPORT_FAILED",
@@ -243,11 +243,17 @@ extension AssetManager {
     case .catalog(let model):
       return try await installFromCatalog(model: model, onState: onState)
     case .localFile(let type, let path, let name, let architecture):
-      // Local-file install is a one-shot importer call — no streaming
-      // progress to forward. Returns instantly compared to multi-GB
-      // downloads, so the lack of progress events is fine.
-      return try await installFromLocalFile(
-        type: type, path: path, name: name, architecture: architecture)
+      // Local-file install is a one-shot importer call. LoRA conversion is
+      // near-instant; base-model conversion is heavy (minutes for a 9B) but
+      // still synchronous — no EnsureState ticks to forward, so neither path
+      // streams progress.
+      switch type {
+      case .baseModel:
+        return try await installBaseModelFromLocalFile(path: path, name: name)
+      default:
+        return try await installFromLocalFile(
+          type: type, path: path, name: name, architecture: architecture)
+      }
     }
   }
 
@@ -343,6 +349,87 @@ extension AssetManager {
     guard let asset = await self.get(id: destinationFile) else {
       throw AssetMutationError.engineMisconfigured(
         "post-install lookup failed for '\(destinationFile)'")
+    }
+    return asset
+  }
+
+  // MARK: - Base-model local file install (safetensors/ckpt → f16 ckpt)
+
+  /// Imports a local base-model checkpoint via the `BaseModelImporter` facade
+  /// (`ModelOp.ModelImporter` under the hood): auto-detects the architecture,
+  /// writes an f16 `.ckpt` (+ `-tensordata`) into the external models
+  /// directory, and registers the inferred spec in `custom.json`.
+  ///
+  /// Quantization is out of scope — the importer serializes weights at f16.
+  /// The model's standard text encoder / VAE are referenced by the spec but
+  /// not produced here; the engine fetches them on demand at generate time.
+  private func installBaseModelFromLocalFile(
+    path: String, name: String?
+  ) async throws -> Asset {
+    let sourceURL = URL(fileURLWithPath: path)
+    guard FileManager.default.fileExists(atPath: sourceURL.path) else {
+      throw AssetMutationError.localFileNotFound(path: path)
+    }
+    guard let externalUrl = ModelZoo.externalUrls.first else {
+      throw AssetMutationError.engineMisconfigured("no external models directory configured")
+    }
+
+    let baseName = name ?? sourceURL.deletingPathExtension().lastPathComponent
+    let sanitized = Self.sanitizeFileName(baseName)
+    guard !sanitized.isEmpty else {
+      throw AssetMutationError.validationFailed(detail: "derived asset name is empty")
+    }
+    // The importer writes `<internalName>_f16.ckpt` into the external dir;
+    // this matches `specification.file` produced by inferModelSpecification.
+    let destinationFile = "\(sanitized)_f16.ckpt"
+    let destinationURL = externalUrl.appendingPathComponent(destinationFile)
+    if FileManager.default.fileExists(atPath: destinationURL.path) {
+      throw AssetMutationError.alreadyInstalled(id: destinationFile)
+    }
+
+    let importer = BaseModelImporter(
+      file: sourceURL, internalName: sanitized, displayName: baseName)
+
+    let result: BaseModelImporter.ImportResult
+    do {
+      result = try importer.import()
+    } catch {
+      // A failed conversion can leave a partial/stub `.ckpt` (+ `-tensordata`)
+      // behind. Remove it so a retry isn't blocked by a misleading
+      // ASSET_ALREADY_INSTALLED (409) on the next attempt.
+      try? FileManager.default.removeItem(atPath: destinationURL.path)
+      try? FileManager.default.removeItem(atPath: destinationURL.path + "-tensordata")
+      if let convertError = error as? BaseModelConvertError {
+        if case .versionDetectionFailed = convertError {
+          throw AssetMutationError.validationFailed(
+            detail:
+              "could not auto-detect the model architecture from "
+              + "'\(sourceURL.lastPathComponent)' — is this a supported base-model checkpoint?")
+        }
+        throw AssetMutationError.importFailed(detail: convertError.localizedDescription)
+      }
+      throw AssetMutationError.importFailed(detail: "\(error)")
+    }
+
+    // Only register architectures this server's API surface knows about.
+    // The importer may detect an engine version we don't expose; refuse it
+    // rather than write a spec the rest of the API can't describe. Best-effort
+    // cleanup of the file the importer just wrote.
+    guard Architecture(rawValue: result.version.rawValue) != nil else {
+      try? FileManager.default.removeItem(atPath: destinationURL.path)
+      try? FileManager.default.removeItem(atPath: destinationURL.path + "-tensordata")
+      throw AssetMutationError.validationFailed(
+        detail:
+          "imported model architecture '\(result.version.rawValue)' is not supported by this server")
+    }
+
+    await MainActor.run {
+      ModelZoo.appendCustomSpecification(result.specification)
+    }
+
+    guard let asset = await self.get(id: result.specification.file) else {
+      throw AssetMutationError.engineMisconfigured(
+        "post-install lookup failed for '\(result.specification.file)'")
     }
     return asset
   }

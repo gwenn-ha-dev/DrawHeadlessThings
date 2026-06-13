@@ -11,11 +11,13 @@ let package = Package(
     .executable(name: "dht-menubar", targets: ["dht-menubar"]),
   ],
   dependencies: [
-    // Local sibling clone, patched to expose ModelZoo as a library product
-    // and to add MediaGenerationPipeline.Result.encodedData(type:).
+    // Local clone, patched to expose ModelZoo as a library product, to add
+    // MediaGenerationPipeline.Result.encodedData(type:), and to add the
+    // _MediaGenerationKit.BaseModelImporter facade (local base-model import).
     // See scripts/setup-dev.sh and scripts/dtc-products.patch.
-    // The clone must be at ../draw-things-community at SHA 9f3f04b7a0729a50384caf58179bed592044d64d.
-    .package(path: "../draw-things-community"),
+    // The clone lives in-tree (gitignored) at .sdk-src/draw-things-community
+    // at SHA 9f3f04b7a0729a50384caf58179bed592044d64d.
+    .package(path: ".sdk-src/draw-things-community"),
     // s4nnc, pinned to the exact revision draw-things-community resolves, so
     // SwiftPM unifies the two on one version. We depend on it directly only
     // to `import NNC` for the one `DynamicGraph.flags` call in DHTServer.swift

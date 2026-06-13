@@ -1,5 +1,213 @@
+diff --git a/Libraries/MediaGenerationKit/Sources/BaseModelImporter.swift b/Libraries/MediaGenerationKit/Sources/BaseModelImporter.swift
+new file mode 100644
+index 0000000..32135e7
+--- /dev/null
++++ b/Libraries/MediaGenerationKit/Sources/BaseModelImporter.swift
+@@ -0,0 +1,202 @@
++@preconcurrency import Diffusion
++import Foundation
++import ModelOp
++import ModelZoo
++
++/// Public wrapper over the internal `ModelOp.ModelImporter` for **base
++/// models**. The mirror of ``LoRAImporter`` for full checkpoints: it converts
++/// a local `.safetensors` (or `.ckpt`) into Draw Things format, writing an
++/// f16 `.ckpt` (+ `-tensordata`) into the configured `ModelZoo.externalUrls`
++/// and returning the inferred `ModelZoo.Specification` so the caller can
++/// register it via `ModelZoo.appendCustomSpecification`.
++///
++/// Added by the DrawHeadlessThings dtc-products.patch — it stays in
++/// `_MediaGenerationKit` so the server depends on the curated facade rather
++/// than reaching into `ModelOp` directly (same rationale as ``LoRAImporter``).
++///
++/// Quantization is out of scope: `ModelImporter` serializes weights at f16.
++public enum BaseModelConvertError: Error, LocalizedError {
++  case fileNotFound(String)
++  case versionDetectionFailed
++  /// A stage of the conversion failed. `stage` names which part (text
++  /// encoder, autoencoder/VAE, tensor writes…) and `detail` carries the
++  /// underlying error so callers see something better than "error 2".
++  case conversionFailed(stage: String, detectedVersion: String?, detail: String)
++
++  public var errorDescription: String? {
++    switch self {
++    case .fileNotFound(let path):
++      return "Base model source file not found: \(path)"
++    case .versionDetectionFailed:
++      return "Could not detect the model architecture from the source weights"
++    case .conversionFailed(let stage, let version, let detail):
++      let v = version.map { " (detected architecture: \($0))" } ?? ""
++      return "Base model conversion failed at \(stage)\(v): \(detail)"
++    }
++  }
++}
++
++/// Reference holder so the escaping `versionCheck` closure can hand the
++/// detected version back to the surrounding scope for error reporting.
++private final class DetectedVersionBox {
++  var value: ModelVersion?
++}
++
++/// Converts a local base-model file into Draw Things format.
++public struct BaseModelImporter: Sendable {
++  /// Source weights file to inspect or convert.
++  public let file: URL
++
++  /// Internal id used to name the output file: the importer writes
++  /// `<internalName>_f16.ckpt` into `ModelZoo.externalUrls`.
++  public let internalName: String
++
++  /// Human-facing name stored in the specification. Defaults to `internalName`.
++  public let displayName: String
++
++  /// The result of a successful ``import(versionHandler:progressHandler:)``.
++  public struct ImportResult {
++    /// Spec ready to hand to `ModelZoo.appendCustomSpecification(_:)`.
++    public let specification: ModelZoo.Specification
++    /// Architecture auto-detected from the weights.
++    public let version: ModelVersion
++    /// Basenames written into the models directory (the model, plus any
++    /// VAE/text-encoder companions extracted from the source).
++    public let importedFiles: [String]
++    /// Dependency files the spec references that are not produced by the
++    /// import itself (e.g. the standard text encoder / VAE). The engine
++    /// fetches these on demand; surfaced so callers can warn or pre-fetch.
++    public let dependencyFiles: [String]
++  }
++
++  private static let importLock = NSLock()
++
++  public init(file: URL, internalName: String, displayName: String? = nil) {
++    self.file = file
++    self.internalName = internalName
++    self.displayName = displayName ?? internalName
++  }
++
++  /// Preflight: detect the architecture without writing anything.
++  public func inspect() throws -> ModelVersion {
++    guard FileManager.default.fileExists(atPath: file.path) else {
++      throw BaseModelConvertError.fileNotFound(file.path)
++    }
++    let importer = ModelImporter(
++      filePath: file.path, modelName: internalName, isTextEncoderCustomized: false,
++      autoencoderFilePath: nil, textEncoderFilePath: nil, textEncoder2FilePath: nil)
++    do {
++      return try importer.inspect().version
++    } catch {
++      throw BaseModelConvertError.conversionFailed(
++        stage: "inspection", detectedVersion: nil, detail: "\(error)")
++    }
++  }
++
++  /// Converts the source file into Draw Things format, writing into the
++  /// currently-configured `ModelZoo.externalUrls`. Does **not** register the
++  /// returned specification — the caller owns that (and must do so on the
++  /// main queue, as `appendCustomSpecification` requires).
++  public func `import`(
++    versionHandler: ((ModelVersion) -> Void)? = nil,
++    progressHandler: ((Double) -> Void)? = nil
++  ) throws -> ImportResult {
++    guard FileManager.default.fileExists(atPath: file.path) else {
++      throw BaseModelConvertError.fileNotFound(file.path)
++    }
++
++    let importer = ModelImporter(
++      filePath: file.path, modelName: internalName, isTextEncoderCustomized: false,
++      autoencoderFilePath: nil, textEncoderFilePath: nil, textEncoder2FilePath: nil)
++
++    Self.importLock.lock()
++    defer { Self.importLock.unlock() }
++
++    // Capture the auto-detected version so a mid-conversion failure can name
++    // the architecture it was working on.
++    let detected = DetectedVersionBox()
++    let result: ([String], ModelVersion, SamplerModifier, ModelImporter.InspectionResult)
++    do {
++      result = try importer.import(
++        versionCheck: { version in
++          detected.value = version
++          versionHandler?(version)
++        },
++        progress: { progress in progressHandler?(Double(progress)) }
++      )
++    } catch let error as ModelImporter.Error {
++      let versionString = detected.value.map { String(describing: $0) }
++      switch error {
++      case .tensorWritesFailed:
++        throw BaseModelConvertError.conversionFailed(
++          stage: "tensor writes", detectedVersion: versionString,
++          detail:
++            "the source tensor layout did not match what the engine expects for this "
++            + "architecture (wrong key count / unexpected format — e.g. an fp8 or "
++            + "transformer-only checkpoint the importer can't map)")
++      case .textEncoder(let underlying):
++        throw BaseModelConvertError.conversionFailed(
++          stage: "text-encoder extraction", detectedVersion: versionString,
++          detail: "\(underlying)")
++      case .autoencoder(let underlying):
++        throw BaseModelConvertError.conversionFailed(
++          stage: "autoencoder (VAE) extraction", detectedVersion: versionString,
++          detail: "\(underlying)")
++      case .noTextEncoder:
++        throw BaseModelConvertError.conversionFailed(
++          stage: "text-encoder extraction", detectedVersion: versionString,
++          detail: "the checkpoint does not embed a text encoder")
++      }
++    } catch {
++      throw BaseModelConvertError.conversionFailed(
++        stage: "conversion", detectedVersion: detected.value.map { String(describing: $0) },
++        detail: "\(error)")
++    }
++
++    let importedFiles = result.0.map { URL(fileURLWithPath: $0).lastPathComponent }
++    let version = result.1
++    let modifier = result.2
++    let inspection = result.3
++
++    let (specification, additionalModels, _) = ModelImporter.inferModelSpecification(
++      modelName: displayName,
++      fileName: internalName,
++      fileNames: importedFiles,
++      modelVersion: version,
++      modifier: modifier,
++      inspectionResult: inspection,
++      prefix: "",
++      objective: nil,
++      conditioning: nil,
++      noiseDiscretization: nil,
++      upcastAttention: false,
++      finetuneScale: Self.defaultImportScale(for: version)
++    )
++
++    // Files the spec points at that the import did not itself produce — the
++    // standard text encoder / autoencoder the engine pulls on demand.
++    let produced = Set(importedFiles)
++    var dependencies = [String]()
++    if let te = specification.textEncoder, !produced.contains(te) { dependencies.append(te) }
++    if let ae = specification.autoencoder, !produced.contains(ae) { dependencies.append(ae) }
++    dependencies.append(
++      contentsOf: additionalModels.map(\.file).filter { !produced.contains($0) })
++
++    return ImportResult(
++      specification: specification, version: version, importedFiles: importedFiles,
++      dependencyFiles: dependencies)
++  }
++
++  /// Default hires-fix / finetune scale per architecture. Mirrors the
++  /// `defaultImportScale` table in the upstream DrawThingsCLI importer.
++  private static func defaultImportScale(for version: ModelVersion) -> UInt16 {
++    switch version {
++    case .hunyuanVideo, .wan21_14b, .wan22_5b:
++      return 12
++    case .v1, .v2, .kandinsky21, .svdI2v, .seedvr2_3b, .seedvr2_7b, .wan21_1_3b:
++      return 8
++    default:
++      return 16
++    }
++  }
++}
 diff --git a/Libraries/MediaGenerationKit/Sources/MediaGenerationPipeline.swift b/Libraries/MediaGenerationKit/Sources/MediaGenerationPipeline.swift
-index 8c743504..33397d71 100644
+index 8c74350..33397d7 100644
 --- a/Libraries/MediaGenerationKit/Sources/MediaGenerationPipeline.swift
 +++ b/Libraries/MediaGenerationKit/Sources/MediaGenerationPipeline.swift
 @@ -634,6 +634,13 @@ public struct MediaGenerationPipeline: Sendable {
@@ -17,7 +225,7 @@ index 8c743504..33397d71 100644
  
    internal final class Storage: @unchecked Sendable {
 diff --git a/Package.swift b/Package.swift
-index 6ae4c90b..08f2d88c 100644
+index 6ae4c90..08f2d88 100644
 --- a/Package.swift
 +++ b/Package.swift
 @@ -9,6 +9,10 @@ let package = Package(
