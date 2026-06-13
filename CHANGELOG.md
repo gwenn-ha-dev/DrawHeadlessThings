@@ -5,6 +5,21 @@ All notable changes to this project are documented here. The format is based on
 to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches 1.0. Pre-1.0, minor versions may include breaking changes.
 
+## [0.3.1]
+
+### Added
+
+- **Local base-model import** — `POST /v1/assets/install` with
+  `source.type=local_file` and `asset_type=base_model` now imports a base-model
+  checkpoint (`.safetensors` / `.ckpt`) from the server filesystem: the
+  architecture is auto-detected, the weights are written as an **f16** `.ckpt`
+  (+ `-tensordata`) into the models directory, and the inferred spec is
+  registered in `custom.json`. The model's standard text encoder / VAE are
+  referenced by the spec and fetched on demand at generate time. Output is f16
+  only (no quantization); a >5 GB import is gated by `LARGE_MODEL_DOWNLOAD`
+  unless `confirm_large_download: true`. Previously `local_file` installs
+  covered LoRA only.
+
 ## [0.3.0] — First public release
 
 The initial public release: a stateless REST + MCP server wrapping the
@@ -40,4 +55,5 @@ engine on Apple Silicon.
   workflow that publishes `DHTServer.app` (with the engine embedded) as a DMG.
   Ad-hoc signed; notarization is pending a paid Apple Developer account.
 
+[0.3.1]: https://github.com/gwenn-ha-dev/DrawHeadlessThings/releases/tag/v0.3.1
 [0.3.0]: https://github.com/gwenn-ha-dev/DrawHeadlessThings/releases/tag/v0.3.0

@@ -4,3 +4,5 @@ Package.resolved
 *.xcodeproj
 .DS_Store
 output/
+.sdk-src/
+.scratch-models/

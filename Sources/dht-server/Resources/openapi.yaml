@@ -2,7 +2,7 @@ openapi: 3.1.0
 
 info:
   title: DrawHeadlessThings API
-  version: 0.3.0
+  version: 0.3.1
   summary: REST API around a headless Draw Things engine (image + video)
   description: |
     Thin, stateless REST surface over the Draw Things diffusion engine
@@ -315,11 +315,24 @@ components:
         asset_type:   { $ref: '#/components/schemas/AssetType' }
         path:         { type: string, description: "Absolute path to the source file on the server filesystem." }
         name:         { type: string, description: "Optional display name; defaults to the file basename." }
-        architecture: { $ref: '#/components/schemas/Architecture', description: "Override auto-detection." }
+        architecture: { $ref: '#/components/schemas/Architecture', description: "LoRA only: override auto-detection. Ignored for base_model (always auto-detected)." }
       description: |
-        Side-loads a local file. Supports `asset_type=lora` only (via the
-        `LoRAImporter` conversion pipeline). Other asset types return
-        `INSTALL_NOT_SUPPORTED_FOR_TYPE`.
+        Side-loads a local file. Supported `asset_type` values:
+
+        - `lora` — converts via the `LoRAImporter` pipeline.
+        - `base_model` — imports a base-model checkpoint (`.safetensors`
+          or `.ckpt`) via the `BaseModelImporter` facade: the architecture
+          is auto-detected, the weights are written as an **f16** `.ckpt`
+          (+ `-tensordata`) into the models directory, and the inferred
+          spec is registered in `custom.json`. The model's standard text
+          encoder / VAE are referenced by the spec but not produced here —
+          the engine fetches them on demand at generate time. Quantization
+          is not supported (output is always f16); a >5 GB import is gated
+          by `412 LARGE_MODEL_DOWNLOAD` unless `confirm_large_download:
+          true` is set. If the detected architecture is one this server
+          does not expose, the import is refused with `VALIDATION_FAILED`.
+
+        Other asset types return `INSTALL_NOT_SUPPORTED_FOR_TYPE`.
 
     # The Asset family is a discriminated union keyed on `type`. Each
     # variant declares only the fields that make sense for its type —
@@ -2162,8 +2175,10 @@ paths:
 
         and the `downloaded: false` rows there install via
         `POST /v1/assets/install` with `source.type=catalog` (pass the asset
-        `id` as `source.model`). Non-base types install only from a local
-        file (`source.type=local_file`).
+        `id` as `source.model`). Base models can additionally be side-loaded
+        from a local checkpoint (`source.type=local_file`,
+        `asset_type=base_model`); LoRAs install only that way. Other types
+        (ControlNet, embedding, …) are not installable yet.
       parameters:
         - $ref: '#/components/parameters/AssetTypeFilter'
         - $ref: '#/components/parameters/ArchitectureFilter'
@@ -2231,10 +2246,19 @@ paths:
           installable ids with `GET /v1/assets?downloaded=false&type=base_model`
           and read the `downloaded: false` rows; pass that asset's `id` as
           `source.model`.
-        - `source.type=local_file`: side-loads a local file. LoRA only
-          (uses the `LoRAImporter` conversion pipeline; the destination
-          file is named `<sanitized_name>_lora_f16.ckpt` in the models dir
-          and a custom_lora.json entry is registered).
+        - `source.type=local_file`: side-loads a local file. Two
+          `asset_type` values are supported:
+          - `lora` — uses the `LoRAImporter` conversion pipeline; the
+            destination file is named `<sanitized_name>_lora_f16.ckpt` in
+            the models dir and a `custom_lora.json` entry is registered.
+          - `base_model` — imports a base-model checkpoint via the
+            `BaseModelImporter` facade; the architecture is auto-detected,
+            the weights are written as `<sanitized_name>_f16.ckpt`
+            (+ `-tensordata`) in the models dir, and a `custom.json` entry
+            is registered. Output is **f16** (no quantization). A >5 GB
+            import is gated by `LARGE_MODEL_DOWNLOAD` (412) unless
+            `confirm_large_download: true`. The standard text encoder / VAE
+            the spec references are fetched on demand at generate time.
 
         Error codes: `VALIDATION_FAILED` (400), `INSTALL_NOT_SUPPORTED_FOR_TYPE`
         (400), `LARGE_MODEL_DOWNLOAD` (412), `CATALOG_MODEL_NOT_FOUND`

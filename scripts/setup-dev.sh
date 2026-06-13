@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
-# Set up the local sibling clone of draw-things-community required by Package.swift.
+# Set up the local clone of draw-things-community required by Package.swift.
 #
 # Usage: ./scripts/setup-dev.sh
 #
-# This clones drawthingsai/draw-things-community at the pinned SHA into a
-# sibling directory (../draw-things-community), and applies the patch in
-# scripts/dtc-products.patch which:
+# This clones drawthingsai/draw-things-community at the pinned SHA into an
+# in-tree, gitignored directory (.sdk-src/draw-things-community), and applies
+# the patch in scripts/dtc-products.patch which:
 #   1. exposes `ModelZoo` as a library product (so we can consume the typed
 #      asset catalogs from our server);
 #   2. adds a public `MediaGenerationPipeline.Result.encodedData(type:)`
-#      method so we don't have to roundtrip through a temp file to encode.
+#      method so we don't have to roundtrip through a temp file to encode;
+#   3. adds the `_MediaGenerationKit.BaseModelImporter` facade — a curated
+#      wrapper over `ModelOp.ModelImporter` used to import local base-model
+#      checkpoints (mirrors the existing LoRAImporter facade).
 #
 # The patch lives only in the local clone — it is never pushed upstream.
 # When the pinned SHA is bumped, re-run this script; if Package.swift has
@@ -22,15 +25,16 @@ REPO_URL="https://github.com/drawthingsai/draw-things-community.git"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DHT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-SIBLING_DIR="$(cd "$DHT_ROOT/.." && pwd)/draw-things-community"
+CLONE_DIR="$DHT_ROOT/.sdk-src/draw-things-community"
 PATCH_FILE="$SCRIPT_DIR/dtc-products.patch"
 
-if [ ! -d "$SIBLING_DIR" ]; then
-  echo "Cloning draw-things-community into $SIBLING_DIR ..."
-  git clone "$REPO_URL" "$SIBLING_DIR"
+if [ ! -d "$CLONE_DIR" ]; then
+  echo "Cloning draw-things-community into $CLONE_DIR ..."
+  mkdir -p "$(dirname "$CLONE_DIR")"
+  git clone "$REPO_URL" "$CLONE_DIR"
 fi
 
-cd "$SIBLING_DIR"
+cd "$CLONE_DIR"
 
 CURRENT_SHA="$(git rev-parse HEAD)"
 if [ "$CURRENT_SHA" != "$PINNED_SHA" ]; then
@@ -57,4 +61,4 @@ else
   exit 1
 fi
 
-echo "Done. draw-things-community ready at $SIBLING_DIR @ $PINNED_SHA + dtc-products patch."
+echo "Done. draw-things-community ready at $CLONE_DIR @ $PINNED_SHA + dtc-products patch."
