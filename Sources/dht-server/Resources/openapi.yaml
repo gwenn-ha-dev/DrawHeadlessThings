@@ -2,7 +2,7 @@ openapi: 3.1.0
 
 info:
   title: DrawHeadlessThings API
-  version: 0.3.2
+  version: 0.3.3
   summary: REST API around a headless Draw Things engine (image + video)
   description: |
     Thin, stateless REST surface over the Draw Things diffusion engine
