@@ -5,6 +5,19 @@ All notable changes to this project are documented here. The format is based on
 to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches 1.0. Pre-1.0, minor versions may include breaking changes.
 
+## [0.3.5]
+
+### Changed
+
+- **Generate panel — chain up to 3 LoRAs.** Three independently configurable
+  LoRA slots (each its own selection + weight), all filtered to the selected
+  model's architecture.
+- **Generate panel — two-stage button.** It reads **Resolve** first; clicking
+  it validates the request and fills the per-model defaults (surfacing any
+  errors/warnings), and only then becomes **Generate**. Changing the model,
+  format, or a LoRA reverts it to Resolve; prompt / negative / advanced edits
+  do not, so re-resolving never clobbers a manual override.
+
 ## [0.3.4]
 
 ### Changed
@@ -90,6 +103,7 @@ engine on Apple Silicon.
   workflow that publishes `DHTServer.app` (with the engine embedded) as a DMG.
   Ad-hoc signed; notarization is pending a paid Apple Developer account.
 
+[0.3.5]: https://github.com/gwenn-ha-dev/DrawHeadlessThings/releases/tag/v0.3.5
 [0.3.4]: https://github.com/gwenn-ha-dev/DrawHeadlessThings/releases/tag/v0.3.4
 [0.3.3]: https://github.com/gwenn-ha-dev/DrawHeadlessThings/releases/tag/v0.3.3
 [0.3.2]: https://github.com/gwenn-ha-dev/DrawHeadlessThings/releases/tag/v0.3.2
