@@ -5,6 +5,17 @@ All notable changes to this project are documented here. The format is based on
 to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches 1.0. Pre-1.0, minor versions may include breaking changes.
 
+## [0.3.2]
+
+### Added
+
+- **Secret mode** — a settings toggle (also a `dht-server --silent` flag) that
+  produces **no logs of any kind**: swift-log is bootstrapped to a no-op
+  backend (server, engine, MCP, Hummingbird, request log), the startup banner
+  is suppressed, and the menu-bar app discards the child's stdout/stderr and
+  keeps no in-memory tail — the activity window shows a "logging is disabled"
+  notice. Toggling it restarts the server.
+
 ## [0.3.1]
 
 ### Added
@@ -55,5 +66,6 @@ engine on Apple Silicon.
   workflow that publishes `DHTServer.app` (with the engine embedded) as a DMG.
   Ad-hoc signed; notarization is pending a paid Apple Developer account.
 
+[0.3.2]: https://github.com/gwenn-ha-dev/DrawHeadlessThings/releases/tag/v0.3.2
 [0.3.1]: https://github.com/gwenn-ha-dev/DrawHeadlessThings/releases/tag/v0.3.1
 [0.3.0]: https://github.com/gwenn-ha-dev/DrawHeadlessThings/releases/tag/v0.3.0

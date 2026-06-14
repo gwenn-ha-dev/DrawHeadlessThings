@@ -10,6 +10,7 @@ enum DHTSettings {
   static let portKey = "port"
   static let bindScopeKey = "bind_scope"
   static let authTokenKey = "auth_token"
+  static let secretModeKey = "secret_mode"
 
   static let defaultPort = 7766
   /// Reachability scope: "private" (loopback only) or "public" (LAN).
@@ -51,6 +52,13 @@ enum DHTSettings {
   static var authToken: String {
     UserDefaults.standard.string(forKey: authTokenKey) ?? ""
   }
+
+  /// "Secret mode": when on, the server runs with `--silent` and the app
+  /// discards its stdout/stderr — the run produces no logs of any kind.
+  /// Defaults to off (UserDefaults.bool defaults to false).
+  static var secretMode: Bool {
+    UserDefaults.standard.bool(forKey: secretModeKey)
+  }
 }
 
 /// The Settings form. Edits write straight through to UserDefaults via
@@ -64,6 +72,8 @@ struct SettingsView: View {
   private var bindScope = DHTSettings.defaultBindScope
   @AppStorage(DHTSettings.authTokenKey)
   private var authToken = ""
+  @AppStorage(DHTSettings.secretModeKey)
+  private var secretMode = false
 
   var body: some View {
     Form {
@@ -100,6 +110,15 @@ struct SettingsView: View {
               .foregroundStyle(.orange)
           }
         }
+      }
+
+      Section("Privacy") {
+        Toggle("Secret mode", isOn: $secretMode)
+        Text("Produces no logs of any kind: the server runs silently and "
+             + "its output is discarded, so the activity window stays empty "
+             + "and nothing is written anywhere. Restarts the server.")
+          .font(.caption)
+          .foregroundStyle(.secondary)
       }
 
       Section {
@@ -175,6 +194,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
       "port": String(DHTSettings.port),
       "models": DHTSettings.modelsDirectory,
       "token": DHTSettings.authToken,
+      "secret": String(DHTSettings.secretMode),
     ]
   }
 
