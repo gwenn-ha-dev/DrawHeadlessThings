@@ -271,7 +271,7 @@ final class MCPServer: Sendable {
     }
     return await runRegisteredGenerationCompose(
       requestId: requestId, kind: "compose",
-      prompt: request.prompt, width: params.width, height: params.height, steps: params.steps,
+      prompt: request.prompt, width: params.width, height: params.height, steps: params.steps ?? 0,
       progressToken: token, emit: emit,
       recipe: { Self.recipe(verb: "compose", request: request, appliedDefaults: $0) }
     ) { [engine] runId, onProgress in
@@ -293,7 +293,7 @@ final class MCPServer: Sendable {
     }
     return await runRegisteredGeneration(
       requestId: requestId, kind: "edit",
-      prompt: request.instruction, width: params.width, height: params.height, steps: params.steps,
+      prompt: request.instruction, width: params.width, height: params.height, steps: params.steps ?? 0,
       progressToken: token, emit: emit,
       recipe: { Self.recipe(verb: "edit", request: request, appliedDefaults: $0) }
     ) { [engine] runId, onProgress in
@@ -314,7 +314,7 @@ final class MCPServer: Sendable {
     }
     return await runRegisteredGeneration(
       requestId: requestId, kind: "restore",
-      prompt: "", width: params.width, height: params.height, steps: params.steps,
+      prompt: "", width: params.width, height: params.height, steps: params.steps ?? 0,
       progressToken: token, emit: emit,
       recipe: { Self.recipe(verb: "restore", request: request, appliedDefaults: $0) }
     ) { [engine] runId, onProgress in

@@ -2,7 +2,7 @@ openapi: 3.1.0
 
 info:
   title: DrawHeadlessThings API
-  version: 0.3.3
+  version: 0.3.4
   summary: REST API around a headless Draw Things engine (image + video)
   description: |
     Thin, stateless REST surface over the Draw Things diffusion engine
@@ -1069,12 +1069,14 @@ components:
         folded into the recipe in `X-DHT-Recipe`); the layer-2
         sub-objects are opt-in and pass through unchanged.
 
-        `width` / `height` / `steps` are required.
-      required: [width, height, steps]
+        `width` / `height` are required. `steps` is optional: omit it to use
+        the chosen model's default step count (reported in `applied_defaults`
+        and folded into the recipe), like `cfg_scale` / `sampler`.
+      required: [width, height]
       properties:
         width:        { type: integer, minimum: 64, maximum: 4096, multipleOf: 64 }
         height:       { type: integer, minimum: 64, maximum: 4096, multipleOf: 64 }
-        steps:        { type: integer, minimum: 1,  maximum: 200 }
+        steps:        { type: integer, minimum: 1,  maximum: 200, description: "Omit for the model's default." }
         cfg_scale:    { type: number,  minimum: 0,  maximum: 30, exclusiveMinimum: true }
         seed:         { type: integer, format: int64, description: "Omit or pass -1 for random." }
         seed_mode:    { $ref: '#/components/schemas/SeedMode' }

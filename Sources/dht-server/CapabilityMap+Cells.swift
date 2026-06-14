@@ -22,7 +22,7 @@ private enum F {
     min: 64, max: 4096, multipleOf: 64, required: true)
   static let heightHW = FieldConstraint.int(
     min: 64, max: 4096, multipleOf: 64, required: true)
-  static let steps = FieldConstraint.int(min: 1, max: 200, required: true)
+  static let steps = FieldConstraint.int(min: 1, max: 200, required: false)
   static let cfgScale = FieldConstraint.float(
     min: 0, max: 30, exclusiveMin: true)
 

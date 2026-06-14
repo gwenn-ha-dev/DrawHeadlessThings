@@ -508,7 +508,9 @@ struct GenerationParams: Codable, Sendable {
   let baseModelId: String
   let width: Int
   let height: Int
-  let steps: Int
+  /// `nil` requests the chosen model's default step count (filled from the
+  /// pristine config at apply/resolve time), mirroring `cfgScale`.
+  let steps: Int?
   let cfgScale: Float?
   let seed: Int64?
   let seedMode: SeedModeAPI?
@@ -585,7 +587,7 @@ struct GenerationParams: Codable, Sendable {
     if height < 64 || height > 4096 || height % 64 != 0 {
       throw ValidationError("height must be a multiple of 64 in [64, 4096], got \(height)")
     }
-    if steps < 1 || steps > 200 {
+    if let steps, steps < 1 || steps > 200 {
       throw ValidationError("steps must be in [1, 200], got \(steps)")
     }
     if let cfgScale, (cfgScale <= 0 || cfgScale > 30) {
@@ -649,7 +651,7 @@ struct GenerationParams: Codable, Sendable {
       baseModelId: baseModelId,
       width: width,
       height: height,
-      steps: steps,
+      steps: steps ?? pristine.steps,
       cfgScale: cfgScale ?? pristine.guidanceScale,
       seed: seed,
       seedMode: seedMode ?? SeedModeAPI(pristine.seedMode),
@@ -684,6 +686,9 @@ struct GenerationParams: Codable, Sendable {
   /// wrapper-side fall-backs and skipped here.
   func appliedDefaults(from pristine: MediaGenerationPipeline.Configuration) -> [AppliedDefault] {
     var out: [AppliedDefault] = []
+    if steps == nil {
+      out.append(.init(fieldPath: "steps", value: .int(Int64(pristine.steps))))
+    }
     if cfgScale == nil {
       out.append(.init(fieldPath: "cfg_scale", value: .double(Double(pristine.guidanceScale))))
     }
@@ -741,7 +746,8 @@ struct GenerationParams: Codable, Sendable {
   func apply(to configuration: inout MediaGenerationPipeline.Configuration, seed: UInt32) {
     configuration.width = width
     configuration.height = height
-    configuration.steps = steps
+    // nil → leave the model's pristine step count (config is seeded from it).
+    if let steps { configuration.steps = steps }
     if let cfgScale { configuration.guidanceScale = cfgScale }
     configuration.seed = seed
     if let seedMode { configuration.seedMode = seedMode.sdk }
@@ -1351,7 +1357,9 @@ struct EngineParams: Codable, Sendable {
   // Core flat (required)
   let width: Int
   let height: Int
-  let steps: Int
+  /// `nil` requests the chosen model's default step count (filled from the
+  /// pristine config at resolve / apply time), mirroring `cfgScale`.
+  let steps: Int?
   // Core flat (optional)
   let cfgScale: Float?
   let seed: Int64?
@@ -1420,7 +1428,7 @@ struct EngineParams: Codable, Sendable {
     EngineParams(
       width: width,
       height: height,
-      steps: steps,
+      steps: steps ?? pristine.steps,
       cfgScale: cfgScale ?? pristine.guidanceScale,
       seed: seed,
       seedMode: seedMode ?? SeedModeAPI(pristine.seedMode),

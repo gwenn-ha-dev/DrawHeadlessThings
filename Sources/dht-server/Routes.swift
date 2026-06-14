@@ -100,7 +100,7 @@ func makeRouter(
     let runId = body.runId ?? UUID().uuidString
     let info = RunInfo(
       runId: runId, kind: "edit", prompt: body.instruction,
-      width: params.width, height: params.height, steps: params.steps)
+      width: params.width, height: params.height, steps: params.steps ?? 0)
     if streamFlag(request) {
       return try await sseGeneration(registry: registry, info: info, cap: config.maxActiveRuns) { onProgress in
         try await engine.edit(body, runId: runId, onProgress: onProgress)
@@ -122,7 +122,7 @@ func makeRouter(
     let runId = body.runId ?? UUID().uuidString
     let info = RunInfo(
       runId: runId, kind: "restore", prompt: "",
-      width: params.width, height: params.height, steps: params.steps)
+      width: params.width, height: params.height, steps: params.steps ?? 0)
     if streamFlag(request) {
       return try await sseGeneration(registry: registry, info: info, cap: config.maxActiveRuns) { onProgress in
         try await engine.restore(body, runId: runId, onProgress: onProgress)
@@ -301,7 +301,7 @@ private func composeRunInfo(
 ) -> RunInfo {
   RunInfo(
     runId: runId, kind: "compose", prompt: body.prompt,
-    width: params.width, height: params.height, steps: params.steps)
+    width: params.width, height: params.height, steps: params.steps ?? 0)
 }
 
 /// Refuse a mutation that's gated by `--read-only`.

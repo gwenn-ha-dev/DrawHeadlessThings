@@ -569,7 +569,7 @@ actor DrawThingsEngine: GenerationEngine {
     onProgress: ProgressCallback?
   ) async throws -> VideoGenerationResponse {
     logger.info(
-      "\(kind)  model=\(params.baseModelId)  \(params.width)×\(params.height)  steps=\(params.steps)\(promptExcerpt(params.prompt))")
+      "\(kind)  model=\(params.baseModelId)  \(params.width)×\(params.height)  steps=\(params.steps.map(String.init) ?? "default")\(promptExcerpt(params.prompt))")
     try verifyAssetIds(params: params)
     try verifyControlHintPaths(params: params)
 
@@ -672,7 +672,7 @@ actor DrawThingsEngine: GenerationEngine {
     onProgress: ProgressCallback? = nil
   ) async throws -> GenerationResponse {
     logger.info(
-      "\(kind)  model=\(params.baseModelId)  \(params.width)×\(params.height)  steps=\(params.steps)\(promptExcerpt(params.prompt))")
+      "\(kind)  model=\(params.baseModelId)  \(params.width)×\(params.height)  steps=\(params.steps.map(String.init) ?? "default")\(promptExcerpt(params.prompt))")
     try verifyAssetIds(params: params)
     try verifyControlHintPaths(params: params)
 
