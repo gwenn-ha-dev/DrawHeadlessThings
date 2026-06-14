@@ -5,6 +5,22 @@ All notable changes to this project are documented here. The format is based on
 to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches 1.0. Pre-1.0, minor versions may include breaking changes.
 
+## [0.3.6]
+
+### Changed
+
+- **Generate panel — live progress, preview & Stop.** Generations run under a
+  client-supplied run id; the result area shows a step X/Y bar and the engine's
+  live preview frames, with a **Stop** button (cancels via
+  `DELETE /v1/runs/{id}`).
+- **Generate panel — per-LoRA weight band.** Each slot's weight slider is
+  bounded by the LoRA's catalog `weight_range` and seeds its recommended weight
+  on selection (was a fixed 0–1.5 / default 1.0).
+- **Generate panel — finish.** Resolve warnings shown verbatim (not just a
+  count); an empty-state when no base model is installed; a prominent primary
+  button; result actions **Copy / Open / Save**; and trackpad **pinch-to-zoom
+  + pan** (double-click to reset) on the result image.
+
 ## [0.3.5]
 
 ### Changed
@@ -103,6 +119,7 @@ engine on Apple Silicon.
   workflow that publishes `DHTServer.app` (with the engine embedded) as a DMG.
   Ad-hoc signed; notarization is pending a paid Apple Developer account.
 
+[0.3.6]: https://github.com/gwenn-ha-dev/DrawHeadlessThings/releases/tag/v0.3.6
 [0.3.5]: https://github.com/gwenn-ha-dev/DrawHeadlessThings/releases/tag/v0.3.5
 [0.3.4]: https://github.com/gwenn-ha-dev/DrawHeadlessThings/releases/tag/v0.3.4
 [0.3.3]: https://github.com/gwenn-ha-dev/DrawHeadlessThings/releases/tag/v0.3.3

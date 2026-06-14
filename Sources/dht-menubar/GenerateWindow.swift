@@ -62,9 +62,13 @@ private struct GenComposeBody: Encodable {
   let prompt: String
   let negativePrompt: String?
   let params: GenParams
+  /// Client-supplied run id so the panel can poll progress / preview and
+  /// cancel without waiting for the response. Omitted for resolve / curl.
+  let runId: String?
   enum CodingKeys: String, CodingKey {
     case model, prompt, params
     case negativePrompt = "negative_prompt"
+    case runId = "run_id"
   }
 }
 private struct GenParams: Encodable {
@@ -86,6 +90,29 @@ private struct GenLoRARef: Encodable {
   let loraId: String
   let weight: Double
   enum CodingKeys: String, CodingKey { case loraId = "lora_id"; case weight }
+}
+
+/// `POST /v1/assets/install` body for a local-file LoRA import.
+private struct GenInstallBody: Encodable {
+  let source: Source
+  let confirmLargeDownload: Bool
+  struct Source: Encodable {
+    let type = "local_file"
+    let assetType = "lora"
+    let path: String
+    let name: String?
+    /// Architecture hint — we pass the selected model's so the imported LoRA
+    /// is tagged compatible and auto-detection never has to guess.
+    let architecture: String?
+    enum CodingKeys: String, CodingKey {
+      case type, path, name, architecture
+      case assetType = "asset_type"
+    }
+  }
+  enum CodingKeys: String, CodingKey {
+    case source
+    case confirmLargeDownload = "confirm_large_download"
+  }
 }
 
 /// A typed error body (`{ detail, title, ... }`) for failed requests.
@@ -140,7 +167,11 @@ final class GenerateModel: ObservableObject {
   @Published var selectedModelID = "" { didSet { onModelChange() } }
   /// Up to 3 chained LoRA slots, each independently configurable.
   @Published var loraSlots: [LoraSlot] = [LoraSlot(), LoraSlot(), LoraSlot()] {
-    didSet { invalidateResolve() }
+    didSet {
+      // Only a selection change invalidates the resolve — dragging a weight
+      // slider (an override, like the advanced fields) must not.
+      if loraSlots.map(\.loraID) != oldValue.map(\.loraID) { invalidateResolve() }
+    }
   }
   @Published var prompt = ""
   @Published var negativePrompt = ""
@@ -159,8 +190,17 @@ final class GenerateModel: ObservableObject {
   @Published var resolved = false
   @Published var isGenerating = false
   @Published var isResolving = false
+  @Published var isImportingLoRA = false
   @Published var statusText: String?
   @Published var errorText: String?
+  /// Non-fatal resolve observations shown verbatim (e.g. "this model ignores cfg").
+  @Published var warnings: [String] = []
+  // Live progress for the in-flight generation (polled from /v1/runs/{id}).
+  @Published var genCurrentStep = 0
+  @Published var genTotalSteps = 0
+  @Published var previewData: Data?
+  private var currentRunID: String?
+  private var wasCancelled = false
 
   /// All sampler ids the engine accepts (`SamplerAPI`). The resolved sampler
   /// is always one of these, so the picker never shows an unknown value.
@@ -181,6 +221,23 @@ final class GenerateModel: ObservableObject {
   var compatibleLoras: [GenAsset] {
     guard let arch = selectedModel?.architecture else { return [] }
     return loras.filter { $0.compatibleArchitecture == arch }
+  }
+
+  func loraAsset(_ id: String) -> GenAsset? { loras.first { $0.id == id } }
+
+  /// Weight band for a slot's chosen LoRA — its catalog `weight_range` if
+  /// known, else a sensible default. Used to bound the slider.
+  func weightRange(forSlot i: Int) -> ClosedRange<Double> {
+    if let r = loraAsset(loraSlots[i].loraID)?.weightRange, r.lower < r.upper {
+      return r.lower...r.upper
+    }
+    return 0...1.5
+  }
+
+  /// On selecting a LoRA, seed its slot with the catalog-recommended weight.
+  func applyRecommendedWeight(slot i: Int) {
+    guard let r = loraAsset(loraSlots[i].loraID)?.weightRange else { return }
+    loraSlots[i].weight = r.recommended
   }
 
   // MARK: Networking
@@ -218,6 +275,65 @@ final class GenerateModel: ObservableObject {
     }
   }
 
+  /// Pick a local LoRA file and import it (`POST /v1/assets/install`,
+  /// `local_file` / `lora`), then refresh the LoRA list and select it.
+  func importLoRA() async {
+    let panel = NSOpenPanel()
+    panel.canChooseFiles = true
+    panel.canChooseDirectories = false
+    panel.allowsMultipleSelection = false
+    panel.prompt = "Import"
+    let types = ["safetensors", "ckpt"].compactMap { UTType(filenameExtension: $0) }
+    if !types.isEmpty { panel.allowedContentTypes = types }
+    guard panel.runModal() == .OK, let url = panel.url else { return }
+    await installLoRA(from: url)
+  }
+
+  private func installLoRA(from url: URL) async {
+    guard let endpointURL = URL(string: "\(endpoint)/v1/assets/install") else { return }
+    isImportingLoRA = true
+    errorText = nil
+    statusText = "Importing LoRA…"
+    defer { isImportingLoRA = false }
+
+    let body = GenInstallBody(
+      source: .init(
+        path: url.path,
+        name: url.deletingPathExtension().lastPathComponent,
+        architecture: selectedModel?.architecture),
+      confirmLargeDownload: true)
+
+    var req = URLRequest(url: endpointURL)
+    req.httpMethod = "POST"
+    req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    req.timeoutInterval = 120
+    authorized(&req)
+    req.httpBody = try? JSONEncoder().encode(body)
+
+    do {
+      let (data, response) = try await URLSession.shared.data(for: req)
+      let http = response as? HTTPURLResponse
+      guard http?.statusCode == 200, let asset = try? JSONDecoder().decode(GenAsset.self, from: data)
+      else {
+        let msg = (try? JSONDecoder().decode(GenErrorBody.self, from: data))
+          .flatMap { $0.detail ?? $0.title }
+        errorText = msg ?? "LoRA import failed (HTTP \(http?.statusCode ?? -1))."
+        statusText = nil
+        return
+      }
+      // Refresh the catalog, then drop the new LoRA into the first free slot.
+      loras = await fetchAssets(type: "lora")
+      if compatibleLoras.contains(where: { $0.id == asset.id }),
+        let i = loraSlots.firstIndex(where: { $0.loraID.isEmpty }) {
+        loraSlots[i].loraID = asset.id
+      }
+      statusText = "Imported \(asset.displayName)."
+    } catch {
+      errorText = "LoRA import request failed: \(error.localizedDescription)"
+      statusText = nil
+    }
+  }
+
   private func onModelChange() {
     // Drop any LoRA selections incompatible with the new model (this mutates
     // loraSlots, which itself invalidates the resolve via its didSet).
@@ -232,6 +348,7 @@ final class GenerateModel: ObservableObject {
   /// Mark the resolved state stale → primary button reverts to "Resolve".
   private func invalidateResolve() {
     resolved = false
+    warnings = []
   }
 
   /// The primary button: resolve first, then (once resolved cleanly) generate.
@@ -261,7 +378,8 @@ final class GenerateModel: ObservableObject {
       params: GenParams(
         width: format.width, height: format.height,
         steps: nil, cfgScale: nil, sampler: nil, seed: nil,
-        outputFormat: "png", loras: loraRefs()))
+        outputFormat: "png", loras: loraRefs()),
+      runId: nil)
 
     var req = URLRequest(url: url)
     req.httpMethod = "POST"
@@ -290,10 +408,8 @@ final class GenerateModel: ObservableObject {
         if let c = params.cfgScale { cfgScale = c }
         if let smp = params.sampler, Self.samplers.contains(smp) { sampler = smp }
       }
-      let warnCount = decoded.warnings?.count ?? 0
-      statusText = warnCount > 0
-        ? "Resolved — \(warnCount) warning\(warnCount == 1 ? "" : "s"). Review, then Generate."
-        : "Resolved. Review params, then Generate."
+      warnings = decoded.warnings?.compactMap { $0.message ?? $0.code } ?? []
+      statusText = "Resolved. Review params, then Generate."
       resolved = true
     } catch {
       errorText = "Resolve request failed: \(error.localizedDescription)"
@@ -303,13 +419,28 @@ final class GenerateModel: ObservableObject {
 
   /// Generate. `reuseSeed` re-runs with the previous seed for an identical
   /// image; otherwise the server randomizes and returns the seed it used.
+  /// A client-supplied run id lets us poll live progress / preview and cancel.
   func generate(reuseSeed: Bool = false) async {
     guard !selectedModelID.isEmpty else { errorText = "Select a model first."; return }
     guard let url = URL(string: "\(endpoint)/v1/compose") else { return }
+    let runID = uuid()
+    currentRunID = runID
+    wasCancelled = false
     isGenerating = true
     errorText = nil
     statusText = "Generating…"
-    defer { isGenerating = false; statusText = nil }
+    genCurrentStep = 0
+    genTotalSteps = 0
+    previewData = nil
+    // Poll progress + live preview concurrently with the (blocking) compose.
+    let poll = Task { await pollProgress(runID: runID) }
+    defer {
+      poll.cancel()
+      isGenerating = false
+      statusText = nil
+      currentRunID = nil
+      previewData = nil
+    }
 
     let seed: Int? = reuseSeed ? lastSeed.map(Int.init) : nil
     var req = URLRequest(url: url)
@@ -318,15 +449,19 @@ final class GenerateModel: ObservableObject {
     req.setValue("image/png", forHTTPHeaderField: "Accept")  // raw bytes, not base64
     req.timeoutInterval = 600
     authorized(&req)
-    req.httpBody = try? JSONEncoder().encode(composeBody(seed: seed))
+    req.httpBody = try? JSONEncoder().encode(composeBody(seed: seed, runID: runID))
 
     do {
       let (data, response) = try await URLSession.shared.data(for: req)
       let http = response as? HTTPURLResponse
       guard http?.statusCode == 200 else {
-        let msg = (try? JSONDecoder().decode(GenErrorBody.self, from: data))
-          .flatMap { $0.detail ?? $0.title }
-        errorText = msg ?? "Generation failed (HTTP \(http?.statusCode ?? -1))."
+        if wasCancelled {
+          statusText = "Cancelled."
+        } else {
+          let msg = (try? JSONDecoder().decode(GenErrorBody.self, from: data))
+            .flatMap { $0.detail ?? $0.title }
+          errorText = msg ?? "Generation failed (HTTP \(http?.statusCode ?? -1))."
+        }
         return
       }
       imageData = data
@@ -334,9 +469,50 @@ final class GenerateModel: ObservableObject {
         lastSeed = s
       }
     } catch {
-      errorText = "Request failed: \(error.localizedDescription)"
+      if wasCancelled { statusText = "Cancelled." } else {
+        errorText = "Request failed: \(error.localizedDescription)"
+      }
     }
   }
+
+  /// Cancel the in-flight generation (`DELETE /v1/runs/{id}`); the compose
+  /// request then returns and `generate()` reports "Cancelled".
+  func cancel() async {
+    guard let id = currentRunID,
+      let encoded = id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
+      let url = URL(string: "\(endpoint)/v1/runs/\(encoded)")
+    else { return }
+    wasCancelled = true
+    var req = URLRequest(url: url)
+    req.httpMethod = "DELETE"
+    authorized(&req)
+    _ = try? await URLSession.shared.data(for: req)
+  }
+
+  /// Poll `/v1/runs/{id}` ~1.5×/s for step progress + the live preview frame,
+  /// until the surrounding generate() cancels this task.
+  private func pollProgress(runID: String) async {
+    guard let encoded = runID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
+      let url = URL(string: "\(endpoint)/v1/runs/\(encoded)")
+    else { return }
+    while !Task.isCancelled {
+      var req = URLRequest(url: url)
+      req.timeoutInterval = 2
+      authorized(&req)
+      if let (data, _) = try? await URLSession.shared.data(for: req),
+        let detail = try? JSONDecoder().decode(RunDetail.self, from: data) {
+        genCurrentStep = detail.currentStep
+        genTotalSteps = detail.totalSteps
+        if let b64 = detail.previewPngBase64, let png = Data(base64Encoded: b64) {
+          previewData = png
+        }
+      }
+      try? await Task.sleep(nanoseconds: 700_000_000)
+    }
+  }
+
+  /// Foundation `UUID()` wrapped so the call site reads intent, not ceremony.
+  private func uuid() -> String { UUID().uuidString }
 
   // MARK: Request building (shared by generate + curl)
 
@@ -347,7 +523,7 @@ final class GenerateModel: ObservableObject {
     return refs.isEmpty ? nil : refs
   }
 
-  private func composeBody(seed: Int?) -> GenComposeBody {
+  private func composeBody(seed: Int?, runID: String? = nil) -> GenComposeBody {
     GenComposeBody(
       model: selectedModelID,
       prompt: prompt,
@@ -355,7 +531,8 @@ final class GenerateModel: ObservableObject {
       params: GenParams(
         width: format.width, height: format.height,
         steps: steps, cfgScale: cfgScale, sampler: sampler, seed: seed,
-        outputFormat: "png", loras: loraRefs()))
+        outputFormat: "png", loras: loraRefs()),
+      runId: runID)
   }
 
   /// The exact `curl` for the current form — the panel's reason to exist as a
@@ -395,12 +572,40 @@ final class GenerateModel: ObservableObject {
       try? data.write(to: url)
     }
   }
+
+  /// Copy the result image to the clipboard.
+  func copyImage() {
+    guard let data = imageData, let image = NSImage(data: data) else { return }
+    NSPasteboard.general.clearContents()
+    NSPasteboard.general.writeObjects([image])
+    statusText = "Image copied to clipboard"
+  }
+
+  /// Open the result full-size in the default viewer (Preview) via a temp file.
+  func openImage() {
+    guard let url = writeTempPNG() else { return }
+    NSWorkspace.shared.open(url)
+  }
+
+  private func writeTempPNG() -> URL? {
+    guard let data = imageData else { return nil }
+    let url = FileManager.default.temporaryDirectory
+      .appendingPathComponent("dht-generated-\(uuid()).png")
+    try? data.write(to: url)
+    return url
+  }
 }
 
 // MARK: - View
 
 struct GenerateView: View {
   @StateObject private var model = GenerateModel()
+
+  // Trackpad pinch-to-zoom + drag-to-pan on the result image.
+  @State private var zoom: CGFloat = 1
+  @State private var pan: CGSize = .zero
+  @GestureState private var pinch: CGFloat = 1
+  @GestureState private var dragPan: CGSize = .zero
 
   var body: some View {
     HSplitView {
@@ -415,21 +620,33 @@ struct GenerateView: View {
   private var formColumn: some View {
     Form {
       Section("Model") {
-        Picker("Model", selection: $model.selectedModelID) {
-          ForEach(model.models) { m in Text(m.displayName).tag(m.id) }
-        }
-        ForEach(model.loraSlots.indices, id: \.self) { i in
-          Picker("LoRA \(i + 1)", selection: $model.loraSlots[i].loraID) {
-            Text("None").tag("")
-            ForEach(model.compatibleLoras) { l in Text(l.displayName).tag(l.id) }
+        if model.models.isEmpty {
+          Text("No base models installed. Install one (the catalog, or "
+               + "POST /v1/assets/install), then reopen this panel.")
+            .font(.caption).foregroundStyle(.secondary)
+        } else {
+          Picker("Model", selection: $model.selectedModelID) {
+            ForEach(model.models) { m in Text(m.displayName).tag(m.id) }
           }
-          if !model.loraSlots[i].loraID.isEmpty {
-            HStack {
-              Text("Weight").font(.caption).foregroundStyle(.secondary)
-              Slider(value: $model.loraSlots[i].weight, in: 0...1.5)
-              Text(String(format: "%.2f", model.loraSlots[i].weight))
-                .monospacedDigit().frame(width: 40, alignment: .trailing)
+          ForEach(model.loraSlots.indices, id: \.self) { i in
+            Picker("LoRA \(i + 1)", selection: $model.loraSlots[i].loraID) {
+              Text("None").tag("")
+              ForEach(model.compatibleLoras) { l in Text(l.displayName).tag(l.id) }
             }
+            .onChange(of: model.loraSlots[i].loraID) { model.applyRecommendedWeight(slot: i) }
+            if !model.loraSlots[i].loraID.isEmpty {
+              HStack {
+                Text("Weight").font(.caption).foregroundStyle(.secondary)
+                Slider(value: $model.loraSlots[i].weight, in: model.weightRange(forSlot: i))
+                Text(String(format: "%.2f", model.loraSlots[i].weight))
+                  .monospacedDigit().frame(width: 40, alignment: .trailing)
+              }
+            }
+          }
+          HStack {
+            Button("Import LoRA…") { Task { await model.importLoRA() } }
+              .disabled(model.isImportingLoRA)
+            if model.isImportingLoRA { ProgressView().controlSize(.small) }
           }
         }
       }
@@ -466,6 +683,10 @@ struct GenerateView: View {
         if model.isResolving {
           Text("Resolving defaults…").font(.caption).foregroundStyle(.secondary)
         }
+        ForEach(model.warnings, id: \.self) { w in
+          Label(w, systemImage: "info.circle")
+            .font(.caption).foregroundStyle(.secondary)
+        }
       }
 
       Section {
@@ -478,6 +699,7 @@ struct GenerateView: View {
             }
           }
           .keyboardShortcut(.return, modifiers: [])
+          .buttonStyle(.borderedProminent)
           .disabled(model.isGenerating || model.isResolving || model.selectedModelID.isEmpty)
 
           Button("Copy as curl") { model.copyCurl() }
@@ -495,34 +717,90 @@ struct GenerateView: View {
     .formStyle(.grouped)
   }
 
+  /// What fills the image box: the live preview while generating, otherwise
+  /// the final result.
+  private var displayImageData: Data? {
+    model.isGenerating ? model.previewData : model.imageData
+  }
+
+  /// Trackpad pinch → zoom (1×–8×). Live scale via `pinch`, committed to `zoom`.
+  private var zoomGesture: some Gesture {
+    MagnifyGesture()
+      .updating($pinch) { value, state, _ in state = value.magnification }
+      .onEnded { value in
+        zoom = min(max(zoom * value.magnification, 1), 8)
+        if zoom == 1 { pan = .zero }
+      }
+  }
+
+  /// Drag to pan — only meaningful once zoomed in.
+  private var panGesture: some Gesture {
+    DragGesture()
+      .updating($dragPan) { value, state, _ in if zoom > 1 { state = value.translation } }
+      .onEnded { value in
+        guard zoom > 1 else { return }
+        pan.width += value.translation.width
+        pan.height += value.translation.height
+      }
+  }
+
   private var resultColumn: some View {
     VStack(spacing: 12) {
       ZStack {
         RoundedRectangle(cornerRadius: 8)
           .fill(Color(nsColor: .underPageBackgroundColor))
-        if let data = model.imageData, let image = NSImage(data: data) {
+        if let data = displayImageData, let image = NSImage(data: data) {
           Image(nsImage: image)
             .resizable()
             .scaledToFit()
+            .scaleEffect(zoom * pinch)
+            .offset(x: pan.width + dragPan.width, y: pan.height + dragPan.height)
+            .gesture(zoomGesture)
+            .simultaneousGesture(panGesture)
+            .onTapGesture(count: 2) { withAnimation { zoom = 1; pan = .zero } }
             .padding(6)
         } else {
           VStack(spacing: 6) {
-            Image(systemName: "photo").font(.system(size: 40)).foregroundStyle(.tertiary)
-            Text("The generated image appears here").font(.caption).foregroundStyle(.secondary)
+            Image(systemName: model.isGenerating ? "hourglass" : "photo")
+              .font(.system(size: 40)).foregroundStyle(.tertiary)
+            Text(model.isGenerating ? "Generating…" : "The generated image appears here")
+              .font(.caption).foregroundStyle(.secondary)
           }
         }
       }
       .frame(maxWidth: .infinity, maxHeight: .infinity)
+      .clipped()
+      // Each new result (or a new run) starts back at fit.
+      .onChange(of: model.imageData) { zoom = 1; pan = .zero }
+      .onChange(of: model.isGenerating) { if model.isGenerating { zoom = 1; pan = .zero } }
 
-      HStack {
-        if let seed = model.lastSeed {
-          Text("seed: \(String(seed))").font(.caption).monospacedDigit().textSelection(.enabled)
-          Button("Reuse") { Task { await model.generate(reuseSeed: true) } }
-            .controlSize(.small).disabled(model.isGenerating)
+      if model.isGenerating {
+        VStack(spacing: 8) {
+          if model.genTotalSteps > 0 {
+            ProgressView(
+              value: Double(min(model.genCurrentStep, model.genTotalSteps)),
+              total: Double(model.genTotalSteps)
+            ) {
+              Text("step \(model.genCurrentStep) / \(model.genTotalSteps)").font(.caption2)
+            }
+          } else {
+            ProgressView().controlSize(.small)
+          }
+          Button("Stop", role: .destructive) { Task { await model.cancel() } }
+            .controlSize(.small)
         }
-        Spacer()
-        Button("Save…") { model.save() }
-          .disabled(model.imageData == nil)
+      } else {
+        HStack {
+          if let seed = model.lastSeed {
+            Text("seed: \(String(seed))").font(.caption).monospacedDigit().textSelection(.enabled)
+            Button("Reuse") { Task { await model.generate(reuseSeed: true) } }
+              .controlSize(.small)
+          }
+          Spacer()
+          Button("Copy") { model.copyImage() }.disabled(model.imageData == nil)
+          Button("Open") { model.openImage() }.disabled(model.imageData == nil)
+          Button("Save…") { model.save() }.disabled(model.imageData == nil)
+        }
       }
     }
     .padding(12)
