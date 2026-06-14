@@ -22,7 +22,7 @@ final class RoutesIntegrationTests: XCTestCase {
     let config = ServerConfig(
       scope: .private, port: 0, modelsDirectory: modelsDir,
       token: nil, logLevel: .error,
-      maxActiveRuns: maxActiveRuns, readOnly: readOnly)
+      maxActiveRuns: maxActiveRuns, readOnly: readOnly, silent: false)
     let router = makeRouter(
       engine: engine, assets: assets, registry: registry, config: config)
     return Application(router: router)

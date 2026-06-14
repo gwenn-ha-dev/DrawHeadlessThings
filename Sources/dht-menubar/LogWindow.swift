@@ -51,7 +51,7 @@ struct JobPanel: View {
 
         if let run = controller.activeRun {
           Text(run.kind).font(.headline)
-          Text("\(run.width)×\(run.height) · \(run.steps) steps")
+          Text("\(run.width)×\(run.height) · \(run.steps > 0 ? run.steps : run.totalSteps) steps")
             .font(.caption).foregroundStyle(.secondary)
           if !run.prompt.isEmpty {
             Text(run.prompt).font(.caption).lineLimit(3)

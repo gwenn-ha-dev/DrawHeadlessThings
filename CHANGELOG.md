@@ -5,6 +5,17 @@ All notable changes to this project are documented here. The format is based on
 to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches 1.0. Pre-1.0, minor versions may include breaking changes.
 
+## [0.3.4]
+
+### Changed
+
+- **`params.steps` is now optional** — omit it to use the chosen model's
+  default step count (filled from the model config, reported in
+  `applied_defaults`, and folded into the recipe), exactly like `cfg_scale` /
+  `sampler`. Previously `steps` was required, so omitting it returned `400`.
+  The Generate panel relies on this: `resolve` now pre-fills the right step
+  count per model (e.g. a Turbo model's low default instead of a fixed 20).
+
 ## [0.3.3]
 
 ### Added
@@ -79,6 +90,7 @@ engine on Apple Silicon.
   workflow that publishes `DHTServer.app` (with the engine embedded) as a DMG.
   Ad-hoc signed; notarization is pending a paid Apple Developer account.
 
+[0.3.4]: https://github.com/gwenn-ha-dev/DrawHeadlessThings/releases/tag/v0.3.4
 [0.3.3]: https://github.com/gwenn-ha-dev/DrawHeadlessThings/releases/tag/v0.3.3
 [0.3.2]: https://github.com/gwenn-ha-dev/DrawHeadlessThings/releases/tag/v0.3.2
 [0.3.1]: https://github.com/gwenn-ha-dev/DrawHeadlessThings/releases/tag/v0.3.1

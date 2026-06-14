@@ -17,7 +17,7 @@ final class PipelineTests: XCTestCase {
   private func buildApp(fake: FakeEngine = FakeEngine()) -> some ApplicationProtocol {
     let config = ServerConfig(
       scope: .private, port: 0, modelsDirectory: NSTemporaryDirectory(),
-      token: nil, logLevel: .error, maxActiveRuns: nil, readOnly: false)
+      token: nil, logLevel: .error, maxActiveRuns: nil, readOnly: false, silent: false)
     let router = makeRouter(
       engine: fake, assets: AssetManager(), registry: RunRegistry(), config: config)
     return Application(router: router)
@@ -141,7 +141,7 @@ final class RecipeResolutionTests: XCTestCase {
     let engine = DrawThingsEngine(modelsDirectory: modelsDir)
     let config = ServerConfig(
       scope: .private, port: 0, modelsDirectory: modelsDir,
-      token: nil, logLevel: .error, maxActiveRuns: nil, readOnly: false)
+      token: nil, logLevel: .error, maxActiveRuns: nil, readOnly: false, silent: false)
     let router = makeRouter(
       engine: engine, assets: AssetManager(), registry: RunRegistry(), config: config)
     return Application(router: router)

@@ -17,7 +17,7 @@ final class HealthAndVersionTests: XCTestCase {
   ) -> some ApplicationProtocol {
     let config = ServerConfig(
       scope: scope, port: 0, modelsDirectory: NSTemporaryDirectory(),
-      token: token, logLevel: .error, maxActiveRuns: nil, readOnly: false)
+      token: token, logLevel: .error, maxActiveRuns: nil, readOnly: false, silent: false)
     let router = makeRouter(
       engine: FakeEngine(), assets: AssetManager(), registry: RunRegistry(),
       config: config)

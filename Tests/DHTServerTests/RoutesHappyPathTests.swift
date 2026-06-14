@@ -21,7 +21,7 @@ final class RoutesHappyPathTests: XCTestCase {
     let config = ServerConfig(
       scope: .private, port: 0, modelsDirectory: NSTemporaryDirectory(),
       token: nil, logLevel: .error,
-      maxActiveRuns: maxActiveRuns, readOnly: readOnly)
+      maxActiveRuns: maxActiveRuns, readOnly: readOnly, silent: false)
     let router = makeRouter(
       engine: fake, assets: assets, registry: registry, config: config)
     return Application(router: router)
