@@ -83,7 +83,13 @@ cp -R "${APP}" "${DMG_STAGE}/"
 ln -s /Applications "${DMG_STAGE}/Applications"
 DMG="${OUT}/${APP_NAME}-${VERSION}.dmg"
 rm -f "${DMG}"
-hdiutil create -volname "${APP_NAME}" -srcfolder "${DMG_STAGE}" -ov -format UDZO "${DMG}"
+# Size the staging image explicitly (content + 100 MB margin). hdiutil's
+# auto-size for -srcfolder occasionally rounds a hair under the content near
+# a sector boundary and fails mid-copy with a misleading "no space left on
+# device" even with hundreds of GB free; the margin makes it deterministic.
+STAGE_MB="$(du -sm "${DMG_STAGE}" | cut -f1)"
+hdiutil create -volname "${APP_NAME}" -srcfolder "${DMG_STAGE}" -ov \
+  -format UDZO -size "$((STAGE_MB + 100))m" "${DMG}"
 rm -rf "${DMG_STAGE}"
 
 echo "==> Done:"
