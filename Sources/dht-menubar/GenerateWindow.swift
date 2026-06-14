@@ -39,8 +39,14 @@ private struct GenAssetList: Decodable { let items: [GenAsset] }
 /// we surface in the Advanced section.
 private struct GenResolveResponse: Decodable {
   let resolvedRequest: GenResolvedRecipe?
-  enum CodingKeys: String, CodingKey { case resolvedRequest = "resolved_request" }
+  let errors: [GenDiagnostic]?
+  let warnings: [GenDiagnostic]?
+  enum CodingKeys: String, CodingKey {
+    case resolvedRequest = "resolved_request"
+    case errors, warnings
+  }
 }
+private struct GenDiagnostic: Decodable { let code: String?; let message: String? }
 private struct GenResolvedRecipe: Decodable { let params: GenResolvedParams? }
 private struct GenResolvedParams: Decodable {
   let steps: Int?
@@ -88,6 +94,13 @@ private struct GenErrorBody: Decodable {
   let detail: String?
 }
 
+/// One configurable LoRA slot in the form. Up to 3 chain together; an empty
+/// `loraID` means the slot is unused.
+struct LoraSlot {
+  var loraID = ""
+  var weight = 1.0
+}
+
 // MARK: - Image format presets
 
 enum GenFormat: String, CaseIterable, Identifiable {
@@ -121,13 +134,17 @@ final class GenerateModel: ObservableObject {
   @Published var models: [GenAsset] = []
   @Published var loras: [GenAsset] = []
 
-  // Form
+  // Form. Changes to model / format / LoRA invalidate a prior resolve (the
+  // defaults and validation depend on them); prompt / negative / advanced do
+  // not, so editing them never silently re-runs resolve over your overrides.
   @Published var selectedModelID = "" { didSet { onModelChange() } }
-  @Published var selectedLoraID = ""  // "" = none
-  @Published var loraWeight = 1.0
+  /// Up to 3 chained LoRA slots, each independently configurable.
+  @Published var loraSlots: [LoraSlot] = [LoraSlot(), LoraSlot(), LoraSlot()] {
+    didSet { invalidateResolve() }
+  }
   @Published var prompt = ""
   @Published var negativePrompt = ""
-  @Published var format: GenFormat = .square
+  @Published var format: GenFormat = .square { didSet { invalidateResolve() } }
 
   // Advanced (pre-filled by resolve, user-editable)
   @Published var steps = 20
@@ -137,6 +154,9 @@ final class GenerateModel: ObservableObject {
   // Result (in memory only)
   @Published var imageData: Data?
   @Published var lastSeed: Int64?
+  /// True once a resolve succeeded for the current model/format/LoRA: the
+  /// primary button reads "Generate"; otherwise "Resolve".
+  @Published var resolved = false
   @Published var isGenerating = false
   @Published var isResolving = false
   @Published var statusText: String?
@@ -199,19 +219,39 @@ final class GenerateModel: ObservableObject {
   }
 
   private func onModelChange() {
-    // Reset an incompatible LoRA selection, then refresh defaults.
-    if !selectedLoraID.isEmpty && !compatibleLoras.contains(where: { $0.id == selectedLoraID }) {
-      selectedLoraID = ""
+    // Drop any LoRA selections incompatible with the new model (this mutates
+    // loraSlots, which itself invalidates the resolve via its didSet).
+    let valid = Set(compatibleLoras.map { $0.id })
+    for i in loraSlots.indices where !loraSlots[i].loraID.isEmpty
+      && !valid.contains(loraSlots[i].loraID) {
+      loraSlots[i].loraID = ""
     }
-    Task { await resolveDefaults() }
+    invalidateResolve()
+  }
+
+  /// Mark the resolved state stale → primary button reverts to "Resolve".
+  private func invalidateResolve() {
+    resolved = false
+  }
+
+  /// The primary button: resolve first, then (once resolved cleanly) generate.
+  func primaryAction() async {
+    if resolved {
+      await generate()
+    } else {
+      await resolveDefaults()
+    }
   }
 
   /// Dry-run the request with no advanced params set, so the engine reports
-  /// the per-model defaults — then mirror them into the Advanced fields.
+  /// the per-model defaults — mirror them into the Advanced fields, surface
+  /// errors/warnings, and flip `resolved` so the button becomes "Generate".
   func resolveDefaults() async {
     guard !selectedModelID.isEmpty else { return }
     guard let url = URL(string: "\(endpoint)/v1/resolve/compose") else { return }
     isResolving = true
+    errorText = nil
+    statusText = nil
     defer { isResolving = false }
 
     let body = GenComposeBody(
@@ -230,15 +270,34 @@ final class GenerateModel: ObservableObject {
     req.httpBody = try? JSONEncoder().encode(body)
 
     do {
-      let (data, _) = try await URLSession.shared.data(for: req)
-      guard let resolved = try? JSONDecoder().decode(GenResolveResponse.self, from: data),
-        let params = resolved.resolvedRequest?.params
-      else { return }
-      if let s = params.steps { steps = s }
-      if let c = params.cfgScale { cfgScale = c }
-      if let smp = params.sampler, Self.samplers.contains(smp) { sampler = smp }
+      let (data, response) = try await URLSession.shared.data(for: req)
+      let http = response as? HTTPURLResponse
+      guard http?.statusCode == 200,
+        let decoded = try? JSONDecoder().decode(GenResolveResponse.self, from: data)
+      else {
+        errorText = "Resolve failed (HTTP \(http?.statusCode ?? -1))."
+        resolved = false
+        return
+      }
+      // Errors mean the request won't generate — stay on "Resolve".
+      if let first = decoded.errors?.first {
+        errorText = first.message ?? first.code ?? "Resolve reported an error."
+        resolved = false
+        return
+      }
+      if let params = decoded.resolvedRequest?.params {
+        if let s = params.steps { steps = s }
+        if let c = params.cfgScale { cfgScale = c }
+        if let smp = params.sampler, Self.samplers.contains(smp) { sampler = smp }
+      }
+      let warnCount = decoded.warnings?.count ?? 0
+      statusText = warnCount > 0
+        ? "Resolved — \(warnCount) warning\(warnCount == 1 ? "" : "s"). Review, then Generate."
+        : "Resolved. Review params, then Generate."
+      resolved = true
     } catch {
-      // Resolve is best-effort; leave the current Advanced values in place.
+      errorText = "Resolve request failed: \(error.localizedDescription)"
+      resolved = false
     }
   }
 
@@ -282,8 +341,10 @@ final class GenerateModel: ObservableObject {
   // MARK: Request building (shared by generate + curl)
 
   private func loraRefs() -> [GenLoRARef]? {
-    guard !selectedLoraID.isEmpty else { return nil }
-    return [GenLoRARef(loraId: selectedLoraID, weight: loraWeight)]
+    let refs = loraSlots
+      .filter { !$0.loraID.isEmpty }
+      .map { GenLoRARef(loraId: $0.loraID, weight: $0.weight) }
+    return refs.isEmpty ? nil : refs
   }
 
   private func composeBody(seed: Int?) -> GenComposeBody {
@@ -357,16 +418,18 @@ struct GenerateView: View {
         Picker("Model", selection: $model.selectedModelID) {
           ForEach(model.models) { m in Text(m.displayName).tag(m.id) }
         }
-        Picker("LoRA", selection: $model.selectedLoraID) {
-          Text("None").tag("")
-          ForEach(model.compatibleLoras) { l in Text(l.displayName).tag(l.id) }
-        }
-        if !model.selectedLoraID.isEmpty {
-          HStack {
-            Text("Weight")
-            Slider(value: $model.loraWeight, in: 0...1.5)
-            Text(String(format: "%.2f", model.loraWeight))
-              .monospacedDigit().frame(width: 40, alignment: .trailing)
+        ForEach(model.loraSlots.indices, id: \.self) { i in
+          Picker("LoRA \(i + 1)", selection: $model.loraSlots[i].loraID) {
+            Text("None").tag("")
+            ForEach(model.compatibleLoras) { l in Text(l.displayName).tag(l.id) }
+          }
+          if !model.loraSlots[i].loraID.isEmpty {
+            HStack {
+              Text("Weight").font(.caption).foregroundStyle(.secondary)
+              Slider(value: $model.loraSlots[i].weight, in: 0...1.5)
+              Text(String(format: "%.2f", model.loraSlots[i].weight))
+                .monospacedDigit().frame(width: 40, alignment: .trailing)
+            }
           }
         }
       }
@@ -407,15 +470,15 @@ struct GenerateView: View {
 
       Section {
         HStack {
-          Button(action: { Task { await model.generate() } }) {
-            if model.isGenerating {
+          Button(action: { Task { await model.primaryAction() } }) {
+            if model.isGenerating || model.isResolving {
               ProgressView().controlSize(.small)
             } else {
-              Text("Generate")
+              Text(model.resolved ? "Generate" : "Resolve")
             }
           }
           .keyboardShortcut(.return, modifiers: [])
-          .disabled(model.isGenerating || model.selectedModelID.isEmpty)
+          .disabled(model.isGenerating || model.isResolving || model.selectedModelID.isEmpty)
 
           Button("Copy as curl") { model.copyCurl() }
             .disabled(model.selectedModelID.isEmpty)
