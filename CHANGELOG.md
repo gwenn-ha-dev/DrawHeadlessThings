@@ -5,6 +5,19 @@ All notable changes to this project are documented here. The format is based on
 to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches 1.0. Pre-1.0, minor versions may include breaking changes.
 
+## [0.3.3]
+
+### Added
+
+- **Generate panel** — a minimal txt2img UI in the menu-bar app (the
+  "Generate…" menu item): a visual builder for `POST /v1/compose` plus a view
+  of the result. Model / single LoRA (+ weight) / prompt / negative-prompt /
+  format dropdowns; `steps`, `cfg`, and `sampler` are pre-filled from
+  `/v1/resolve/compose` and editable under an Advanced section. The image is
+  fetched as raw bytes (`Accept: image/png`) and held in memory — it reaches
+  disk only via **Save…**. The seed used is shown with a **Reuse** button, and
+  **Copy as curl** yields the exact equivalent command.
+
 ## [0.3.2]
 
 ### Added
@@ -66,6 +79,7 @@ engine on Apple Silicon.
   workflow that publishes `DHTServer.app` (with the engine embedded) as a DMG.
   Ad-hoc signed; notarization is pending a paid Apple Developer account.
 
+[0.3.3]: https://github.com/gwenn-ha-dev/DrawHeadlessThings/releases/tag/v0.3.3
 [0.3.2]: https://github.com/gwenn-ha-dev/DrawHeadlessThings/releases/tag/v0.3.2
 [0.3.1]: https://github.com/gwenn-ha-dev/DrawHeadlessThings/releases/tag/v0.3.1
 [0.3.0]: https://github.com/gwenn-ha-dev/DrawHeadlessThings/releases/tag/v0.3.0

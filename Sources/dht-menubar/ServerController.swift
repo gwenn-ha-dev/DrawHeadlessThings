@@ -84,6 +84,10 @@ final class ServerController: ObservableObject {
   /// active — and reads the same as the URLs in the docs.
   var endpoint: String { "http://localhost:\(boundPort)" }
 
+  /// Bearer token of the running server, for in-app API calls (the Generate
+  /// panel). Empty in private scope.
+  var apiToken: String { runningToken }
+
   private init() {}
 
   // MARK: - Lifecycle

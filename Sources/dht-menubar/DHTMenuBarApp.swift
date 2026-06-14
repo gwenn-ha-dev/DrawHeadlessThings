@@ -60,6 +60,11 @@ struct MenuContent: View {
       LogWindowController.shared.show()
     }
 
+    Button("Generate…") {
+      GenerateWindowController.shared.show()
+    }
+    .disabled(controller.status != .running)
+
     Button("Open API Docs") {
       guard let url = URL(string: "\(controller.endpoint)/docs") else { return }
       NSWorkspace.shared.open(url)
