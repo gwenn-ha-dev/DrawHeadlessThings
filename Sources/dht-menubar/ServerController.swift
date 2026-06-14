@@ -44,6 +44,10 @@ final class ServerController: ObservableObject {
   /// desyncs the health poll or the menu.
   @Published private(set) var boundScope = DHTSettings.defaultBindScope
   @Published private(set) var boundPort = DHTSettings.defaultPort
+  /// Secret mode snapshot for the running server: when true the child runs
+  /// with `--silent`, its stdout/stderr are discarded, and the app keeps no
+  /// log — `logTail` stays empty and the activity window shows a notice.
+  @Published private(set) var secretMode = false
   private var runningToken = ""
 
   /// In-flight runs polled from `GET /v1/runs`, and the active run's latest
@@ -86,6 +90,10 @@ final class ServerController: ObservableObject {
 
   func start() {
     guard process == nil else { return }
+    // Snapshot secret mode first: it gates appendLog, so even start-time
+    // errors below stay silent when secret mode is on. Clear any prior tail.
+    secretMode = DHTSettings.secretMode
+    if secretMode { logTail = "" }
     guard let binary = Self.locateServerBinary() else {
       appendLog("[dht-menubar] ERROR: dht-server binary not found in app bundle\n")
       return
@@ -119,22 +127,35 @@ final class ServerController: ObservableObject {
     if !token.isEmpty {
       arguments += ["--token", token]
     }
+    if secretMode {
+      arguments.append("--silent")
+    }
 
     let proc = Process()
     proc.executableURL = binary
     proc.arguments = arguments
 
-    let pipe = Pipe()
-    proc.standardOutput = pipe
-    proc.standardError = pipe
-    pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
-      let data = handle.availableData
-      if data.isEmpty {
-        handle.readabilityHandler = nil
-        return
+    // Secret mode: discard the child's stdout/stderr entirely (/dev/null) so
+    // nothing it emits — including engine C-level output — is ever captured.
+    // Otherwise capture into the in-memory tail shown by the activity window.
+    var pipe: Pipe?
+    if secretMode {
+      proc.standardOutput = FileHandle.nullDevice
+      proc.standardError = FileHandle.nullDevice
+    } else {
+      let p = Pipe()
+      proc.standardOutput = p
+      proc.standardError = p
+      p.fileHandleForReading.readabilityHandler = { [weak self] handle in
+        let data = handle.availableData
+        if data.isEmpty {
+          handle.readabilityHandler = nil
+          return
+        }
+        guard let text = String(data: data, encoding: .utf8) else { return }
+        Task { @MainActor in self?.appendLog(text) }
       }
-      guard let text = String(data: data, encoding: .utf8) else { return }
-      Task { @MainActor in self?.appendLog(text) }
+      pipe = p
     }
 
     proc.terminationHandler = { [weak self] _ in
@@ -278,6 +299,8 @@ final class ServerController: ObservableObject {
   // MARK: - Logs
 
   private func appendLog(_ text: String) {
+    // Secret mode: keep no log at all, not even the app's own status lines.
+    guard !secretMode else { return }
     logTail += text
     if logTail.utf8.count > maxLogBytes {
       logTail = String(logTail.suffix(maxLogBytes / 2))

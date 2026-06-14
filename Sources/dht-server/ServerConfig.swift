@@ -37,6 +37,12 @@ struct ServerConfig: Sendable {
   /// When true, the asset-mutation routes (`POST /v1/assets/install`,
   /// `DELETE /v1/assets/{id}`) return 403 FORBIDDEN.
   let readOnly: Bool
+  /// "Secret mode": disable all logging. The process bootstraps a no-op
+  /// swift-log backend (swallowing every Logger — server, engine, MCP,
+  /// Hummingbird, request log) and prints no startup banner. The menu-bar
+  /// app additionally discards the child's stdout/stderr, so the run
+  /// produces no logs of any kind.
+  let silent: Bool
 
   var isPrivate: Bool { scope == .private }
 
@@ -51,6 +57,7 @@ struct ServerConfig: Sendable {
     let logLevelRaw = argValue(args, name: "--log-level") ?? "info"
     let maxActiveRuns = argValue(args, name: "--max-active-runs").flatMap(Int.init)
     let readOnly = args.contains("--read-only")
+    let silent = args.contains("--silent")
 
     guard FileManager.default.fileExists(atPath: modelsDir) else {
       stderr("error: models directory does not exist: \(modelsDir)")
@@ -87,7 +94,8 @@ struct ServerConfig: Sendable {
       token: token,
       logLevel: level,
       maxActiveRuns: maxActiveRuns,
-      readOnly: readOnly
+      readOnly: readOnly,
+      silent: silent
     )
   }
 

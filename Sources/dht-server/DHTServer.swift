@@ -8,7 +8,7 @@ import _MediaGenerationKit
 /// Single source of truth for the API version reported by `/v1/info`,
 /// the MCP `initialize` reply, and `--help`. Keep in sync with
 /// `info.version` in `Resources/openapi.yaml`.
-let dhtAPIVersion = "0.3.1"
+let dhtAPIVersion = "0.3.2"
 
 @main
 struct DHTServer {
@@ -26,6 +26,15 @@ struct DHTServer {
 
     guard let config = ServerConfig.parse(args) else {
       exit(1)
+    }
+
+    // Secret mode: swallow every swift-log Logger process-wide before any
+    // logger is created — server, engine, MCP, Hummingbird internals, and
+    // the request-log middleware all route through this no-op backend, so
+    // nothing is emitted. (stdout/stderr are additionally sent to /dev/null
+    // by the menu-bar supervisor; here we also skip the startup banner.)
+    if config.silent {
+      LoggingSystem.bootstrap { _ in SwiftLogNoOpLogHandler() }
     }
 
     // Match what the DT GUI app does at startup: copy tensor data into an
@@ -78,9 +87,11 @@ struct DHTServer {
     let bound = config.scope.bindHosts
       .map { $0.contains(":") ? "[\($0)]:\(config.port)" : "\($0):\(config.port)" }
       .joined(separator: ", ")
-    print(
-      "dht-server listening on \(bound) "
-      + "(models: \(config.modelsDirectory)) — \(authNote)\(readOnlyNote)\(maxRunsNote)")
+    if !config.silent {
+      print(
+        "dht-server listening on \(bound) "
+        + "(models: \(config.modelsDirectory)) — \(authNote)\(readOnlyNote)\(maxRunsNote)")
+    }
 
     // Run both listeners concurrently; when one stops (shutdown signal or
     // failure) tear the other down too.
@@ -114,6 +125,9 @@ struct DHTServer {
       --max-active-runs <n>   Cap on concurrent generation runs (default: uncapped).
       --read-only             Refuse asset mutations (POST /v1/assets/install,
                               DELETE /v1/assets/{id}) with 403 READ_ONLY_MODE.
+      --silent                Secret mode: emit no logs of any kind — no
+                              startup banner, no request logs, no engine
+                              logs (swift-log is bootstrapped to a no-op).
 
     EXAMPLES:
       dht-server                                # private (loopback), no auth

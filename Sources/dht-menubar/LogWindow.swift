@@ -19,13 +19,20 @@ struct LogView: View {
 
   private var logScroll: some View {
     ScrollView {
-      Text(controller.logTail.isEmpty ? "(no server output yet)" : controller.logTail)
+      Text(logPlaceholder)
         .font(.system(.caption, design: .monospaced))
         .textSelection(.enabled)
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(8)
     }
     .defaultScrollAnchor(.bottom)
+  }
+
+  /// Secret mode keeps no log, so the tail is always empty — say why,
+  /// rather than imply the server is merely quiet.
+  private var logPlaceholder: String {
+    if controller.secretMode { return "Secret mode is on — logging is disabled." }
+    return controller.logTail.isEmpty ? "(no server output yet)" : controller.logTail
   }
 }
 
