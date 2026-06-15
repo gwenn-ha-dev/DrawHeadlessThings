@@ -5,6 +5,17 @@ All notable changes to this project are documented here. The format is based on
 to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches 1.0. Pre-1.0, minor versions may include breaking changes.
 
+## [0.3.7]
+
+### Added
+
+- **Generate panel — Import Model….** Side-load a local base-model checkpoint
+  (`.safetensors` / `.ckpt`) straight from the panel via
+  `POST /v1/assets/install` (`local_file` / `base_model`); the architecture is
+  auto-detected. On success the model list refreshes and the new model is
+  selected. The button is available even with an empty catalog, so a first
+  model can be imported without leaving the panel.
+
 ## [0.3.6]
 
 ### Changed
