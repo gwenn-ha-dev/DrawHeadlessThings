@@ -92,17 +92,18 @@ private struct GenLoRARef: Encodable {
   enum CodingKeys: String, CodingKey { case loraId = "lora_id"; case weight }
 }
 
-/// `POST /v1/assets/install` body for a local-file LoRA import.
+/// `POST /v1/assets/install` body for a local-file import (LoRA or base model).
 private struct GenInstallBody: Encodable {
   let source: Source
   let confirmLargeDownload: Bool
   struct Source: Encodable {
     let type = "local_file"
-    let assetType = "lora"
+    let assetType: String
     let path: String
     let name: String?
-    /// Architecture hint — we pass the selected model's so the imported LoRA
-    /// is tagged compatible and auto-detection never has to guess.
+    /// Architecture hint. For a LoRA we pass the selected model's so the
+    /// imported LoRA is tagged compatible and auto-detection never has to
+    /// guess; for a base model the importer auto-detects, so we leave it nil.
     let architecture: String?
     enum CodingKeys: String, CodingKey {
       case type, path, name, architecture
@@ -191,6 +192,7 @@ final class GenerateModel: ObservableObject {
   @Published var isGenerating = false
   @Published var isResolving = false
   @Published var isImportingLoRA = false
+  @Published var isImportingModel = false
   @Published var statusText: String?
   @Published var errorText: String?
   /// Non-fatal resolve observations shown verbatim (e.g. "this model ignores cfg").
@@ -298,6 +300,7 @@ final class GenerateModel: ObservableObject {
 
     let body = GenInstallBody(
       source: .init(
+        assetType: "lora",
         path: url.path,
         name: url.deletingPathExtension().lastPathComponent,
         architecture: selectedModel?.architecture),
@@ -330,6 +333,69 @@ final class GenerateModel: ObservableObject {
       statusText = "Imported \(asset.displayName)."
     } catch {
       errorText = "LoRA import request failed: \(error.localizedDescription)"
+      statusText = nil
+    }
+  }
+
+  /// Pick a local checkpoint and import it as a base model
+  /// (`POST /v1/assets/install`, `local_file` / `base_model`), then refresh
+  /// the model list and select it.
+  func importModel() async {
+    let panel = NSOpenPanel()
+    panel.canChooseFiles = true
+    panel.canChooseDirectories = false
+    panel.allowsMultipleSelection = false
+    panel.prompt = "Import"
+    let types = ["safetensors", "ckpt"].compactMap { UTType(filenameExtension: $0) }
+    if !types.isEmpty { panel.allowedContentTypes = types }
+    guard panel.runModal() == .OK, let url = panel.url else { return }
+    await installModel(from: url)
+  }
+
+  private func installModel(from url: URL) async {
+    guard let endpointURL = URL(string: "\(endpoint)/v1/assets/install") else { return }
+    isImportingModel = true
+    errorText = nil
+    statusText = "Importing model… (conversion can take a few minutes)"
+    defer { isImportingModel = false }
+
+    // The importer auto-detects the architecture, so no hint is sent.
+    let body = GenInstallBody(
+      source: .init(
+        assetType: "base_model",
+        path: url.path,
+        name: url.deletingPathExtension().lastPathComponent,
+        architecture: nil),
+      confirmLargeDownload: true)
+
+    var req = URLRequest(url: endpointURL)
+    req.httpMethod = "POST"
+    req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    // Base-model conversion is heavy (minutes for a large model) and the call
+    // is synchronous, so give it a generous ceiling.
+    req.timeoutInterval = 1800
+    authorized(&req)
+    req.httpBody = try? JSONEncoder().encode(body)
+
+    do {
+      let (data, response) = try await URLSession.shared.data(for: req)
+      let http = response as? HTTPURLResponse
+      guard http?.statusCode == 200, let asset = try? JSONDecoder().decode(GenAsset.self, from: data)
+      else {
+        let msg = (try? JSONDecoder().decode(GenErrorBody.self, from: data))
+          .flatMap { $0.detail ?? $0.title }
+        errorText = msg ?? "Model import failed (HTTP \(http?.statusCode ?? -1))."
+        statusText = nil
+        return
+      }
+      // Refresh the catalog and select the freshly imported model.
+      models = await fetchAssets(type: "base_model")
+      if models.contains(where: { $0.id == asset.id }) {
+        selectedModelID = asset.id  // triggers onModelChange → resolve
+      }
+      statusText = "Imported \(asset.displayName)."
+    } catch {
+      errorText = "Model import request failed: \(error.localizedDescription)"
       statusText = nil
     }
   }
@@ -621,8 +687,8 @@ struct GenerateView: View {
     Form {
       Section("Model") {
         if model.models.isEmpty {
-          Text("No base models installed. Install one (the catalog, or "
-               + "POST /v1/assets/install), then reopen this panel.")
+          Text("No base models installed. Install one (the catalog, "
+               + "POST /v1/assets/install, or Import Model… below), then it appears here.")
             .font(.caption).foregroundStyle(.secondary)
         } else {
           Picker("Model", selection: $model.selectedModelID) {
@@ -643,10 +709,18 @@ struct GenerateView: View {
               }
             }
           }
-          HStack {
+        }
+        // Import controls. A base model can be imported even with an empty
+        // catalog; a LoRA needs a selected model to tag it compatible.
+        HStack {
+          Button("Import Model…") { Task { await model.importModel() } }
+            .disabled(model.isImportingModel || model.isImportingLoRA)
+          if !model.models.isEmpty {
             Button("Import LoRA…") { Task { await model.importLoRA() } }
-              .disabled(model.isImportingLoRA)
-            if model.isImportingLoRA { ProgressView().controlSize(.small) }
+              .disabled(model.isImportingLoRA || model.isImportingModel)
+          }
+          if model.isImportingModel || model.isImportingLoRA {
+            ProgressView().controlSize(.small)
           }
         }
       }
