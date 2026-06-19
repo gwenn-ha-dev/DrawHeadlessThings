@@ -973,18 +973,34 @@ extension DrawThingsEngine {
     }
   }
 
+  /// True when `spec` is a guidance-distilled FLUX edit model that crashes the
+  /// engine's cond/uncond concat under an explicit `cfg_scale > 1`. Catches the
+  /// FLUX.1 family (catalog sets `guidanceEmbed == true`) *and* FLUX.2
+  /// (`flux2_*`, whose catalog entry omits that flag) via the stable `kontext`
+  /// modifier marker. Qwen-Image-Edit (non-distilled, real CFG) carries a
+  /// different modifier and is intentionally excluded. Single source of truth
+  /// for both the generation guard and the `/v1/resolve/edit` prediction so the
+  /// two can't drift.
+  fileprivate static func isGuidanceDistilledEditModel(_ spec: ModelZoo.Specification) -> Bool {
+    if spec.guidanceEmbed == true { return true }
+    switch spec.modifier?.rawValue {
+    case "kontext", "kontext_kv": return true
+    default: return false
+    }
+  }
+
   /// Rejects `cfg_scale > 1` on a guidance-distilled FLUX edit model before it
-  /// reaches the engine. Such models (Kontext / Klein, `guidance_embed = true`)
+  /// reaches the engine. Such models (Kontext / Klein, FLUX.1 *and* FLUX.2)
   /// have no unconditional branch; an explicit CFG drives a dual cond/uncond
   /// graph whose reference-token sequences are asymmetric and the engine
-  /// asserts at `ccv_cnnp_concat_build`. Scope is deliberately narrow — only
-  /// `guidanceEmbed` edit models, so Qwen-Image-Edit (non-distilled, real CFG)
-  /// and plain FLUX dev txt2img are untouched. Only an *explicit* cfg_scale is
-  /// checked: the distilled default (≈1) generates fine.
+  /// asserts at `ccv_cnnp_concat_build`. Scope is deliberately narrow (see
+  /// [[isGuidanceDistilledEditModel]]), so Qwen-Image-Edit (non-distilled, real
+  /// CFG) and plain FLUX dev txt2img are untouched. Only an *explicit* cfg_scale
+  /// is checked: the distilled default (≈1) generates fine.
   fileprivate func assertCfgCompatibleWithEdit(_ params: GenerationParams) throws {
     guard let cfg = params.cfgScale, cfg > 1 else { return }
     guard let spec = ModelZoo.specificationForModel(params.baseModelId),
-      spec.guidanceEmbed == true
+      Self.isGuidanceDistilledEditModel(spec)
     else { return }
     throw EngineError.cfgUnsupportedForDistilledEdit(
       baseModelId: params.baseModelId, cfgScale: cfg)
@@ -1203,7 +1219,8 @@ extension DrawThingsEngine {
     // guidance-distilled FLUX edit model crashes the engine's cond/uncond concat.
     var errors = d.errors
     if let cfg = g.cfgScale, cfg > 1,
-      ModelZoo.specificationForModel(request.model)?.guidanceEmbed == true
+      let spec = ModelZoo.specificationForModel(request.model),
+      Self.isGuidanceDistilledEditModel(spec)
     {
       errors.append(
         Diagnostic(
