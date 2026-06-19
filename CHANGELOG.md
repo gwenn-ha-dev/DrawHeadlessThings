@@ -5,6 +5,22 @@ All notable changes to this project are documented here. The format is based on
 to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches 1.0. Pre-1.0, minor versions may include breaking changes.
 
+## [0.3.8]
+
+### Fixed
+
+- **Server crash on `cfg_scale > 1` with FLUX.2 edit models.** A `POST /v1/edit`
+  against a guidance-distilled FLUX.2 Klein/Kontext model (`flux2_4b`) with an
+  explicit `cfg_scale > 1` crashed the engine at `ccv_cnnp_concat_build`: these
+  models have no unconditional branch, so an explicit CFG builds an asymmetric
+  cond/uncond concat. The compatibility guard only recognised the FLUX.1 family
+  (catalog `guidance_embed = true`); FLUX.2's catalog entry omits that flag, so
+  the request slipped through. The guard now also keys on the
+  `kontext`/`kontext_kv` modifier, covering FLUX.1 and FLUX.2 while leaving
+  Qwen-Image-Edit (real CFG) untouched. The request is rejected up front with
+  `CFG_SCALE_UNSUPPORTED_FOR_DISTILLED_EDIT` (400) on both `/v1/edit` and
+  `/v1/resolve/edit`.
+
 ## [0.3.7]
 
 ### Added
