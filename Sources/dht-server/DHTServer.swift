@@ -8,7 +8,7 @@ import _MediaGenerationKit
 /// Single source of truth for the API version reported by `/v1/info`,
 /// the MCP `initialize` reply, and `--help`. Keep in sync with
 /// `info.version` in `Resources/openapi.yaml`.
-let dhtAPIVersion = "0.3.8"
+let dhtAPIVersion = "0.3.9"
 
 @main
 struct DHTServer {

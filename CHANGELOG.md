@@ -5,6 +5,33 @@ All notable changes to this project are documented here. The format is based on
 to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches 1.0. Pre-1.0, minor versions may include breaking changes.
 
+## [0.3.9]
+
+### Changed
+
+- **Menu-bar menu — clearer and more useful.** Reorganised into sections with an
+  enriched status line and a live "N in flight · M waiting" line while busy;
+  added **Copy Endpoint** and **Copy API Token** (public scope); a contextual
+  hint replaces the silently-greyed Generate/Docs/MCP items; ⌘G/⌘,/⌘Q shortcuts.
+  The icon stays monochrome but its four states are now distinct by shape, and
+  the pulse also covers the start/stop transitions.
+- **Generate panel — single-button flow and a cleaner layout.** The
+  "Resolve → Generate" two-step is gone: defaults resolve automatically in the
+  background and one **Generate** button generates. Model/format/import moved to
+  a header bar (format as an aspect-ratio segmented control); LoRAs are now an
+  add-on-demand list (max 3) instead of three fixed empty slots; the result
+  image is larger and cross-fades in; errors show as a banner and quick actions
+  confirm via transient toasts (⌘S save, ⌘. stop).
+
+### Fixed
+
+- **Generate panel swallowed I/O and transport errors.** Saving an image, the
+  "Open" temp-file write, and the asset-list fetch no longer fail silently — a
+  failed save/open surfaces an error, and an unreachable server is no longer
+  indistinguishable from an empty catalogue. The in-flight generation is now
+  tracked too, so **Stop** (and closing the window) aborts the client request
+  rather than waiting out the timeout if the server ignores the cancel.
+
 ## [0.3.8]
 
 ### Fixed
@@ -146,6 +173,9 @@ engine on Apple Silicon.
   workflow that publishes `DHTServer.app` (with the engine embedded) as a DMG.
   Ad-hoc signed; notarization is pending a paid Apple Developer account.
 
+[0.3.9]: https://github.com/gwenn-ha-dev/DrawHeadlessThings/releases/tag/v0.3.9
+[0.3.8]: https://github.com/gwenn-ha-dev/DrawHeadlessThings/releases/tag/v0.3.8
+[0.3.7]: https://github.com/gwenn-ha-dev/DrawHeadlessThings/releases/tag/v0.3.7
 [0.3.6]: https://github.com/gwenn-ha-dev/DrawHeadlessThings/releases/tag/v0.3.6
 [0.3.5]: https://github.com/gwenn-ha-dev/DrawHeadlessThings/releases/tag/v0.3.5
 [0.3.4]: https://github.com/gwenn-ha-dev/DrawHeadlessThings/releases/tag/v0.3.4
