@@ -124,7 +124,8 @@ private struct GenErrorBody: Decodable {
 
 /// One configurable LoRA slot in the form. Up to 3 chain together; an empty
 /// `loraID` means the slot is unused.
-struct LoraSlot {
+struct LoraSlot: Identifiable {
+  let id = UUID()
   var loraID = ""
   var weight = 1.0
 }
@@ -137,6 +138,25 @@ enum GenFormat: String, CaseIterable, Identifiable {
   case landscape = "Landscape (1216×832)"
 
   var id: String { rawValue }
+
+  /// Short label for the segmented format control (the rawValue carries the
+  /// full "Square (1024×1024)" string, too long for a compact button).
+  var shortLabel: String {
+    switch self {
+    case .square: return "Square"
+    case .portrait: return "Portrait"
+    case .landscape: return "Landscape"
+    }
+  }
+
+  /// SF Symbol whose silhouette mirrors the aspect ratio.
+  var icon: String {
+    switch self {
+    case .square: return "square"
+    case .portrait: return "rectangle.portrait"
+    case .landscape: return "rectangle"
+    }
+  }
 
   var width: Int {
     switch self {
@@ -166,8 +186,8 @@ final class GenerateModel: ObservableObject {
   // defaults and validation depend on them); prompt / negative / advanced do
   // not, so editing them never silently re-runs resolve over your overrides.
   @Published var selectedModelID = "" { didSet { onModelChange() } }
-  /// Up to 3 chained LoRA slots, each independently configurable.
-  @Published var loraSlots: [LoraSlot] = [LoraSlot(), LoraSlot(), LoraSlot()] {
+  /// Chained LoRA slots, added on demand (up to `maxLoRASlots`).
+  @Published var loraSlots: [LoraSlot] = [] {
     didSet {
       // Only a selection change invalidates the resolve — dragging a weight
       // slider (an override, like the advanced fields) must not.
@@ -203,6 +223,16 @@ final class GenerateModel: ObservableObject {
   @Published var previewData: Data?
   private var currentRunID: String?
   private var wasCancelled = false
+  /// The in-flight generation, tracked so Stop and window-close can abort the
+  /// client request — not just ask the server to stop via `DELETE /v1/runs`.
+  private var genTask: Task<Void, Never>?
+  /// Debounced background resolve: model/format/LoRA edits schedule one so the
+  /// Advanced fields show the model's real defaults without the user ever
+  /// clicking "Resolve". Cancelled and superseded on each new edit.
+  private var resolveTask: Task<Void, Never>?
+  /// Transient confirmation ("curl copied", "Saved …") that fades on its own.
+  @Published var toast: String?
+  private var toastTask: Task<Void, Never>?
 
   /// All sampler ids the engine accepts (`SamplerAPI`). The resolved sampler
   /// is always one of these, so the picker never shows an unknown value.
@@ -227,18 +257,33 @@ final class GenerateModel: ObservableObject {
 
   func loraAsset(_ id: String) -> GenAsset? { loras.first { $0.id == id } }
 
+  /// Cap on chained LoRA slots — the engine accepts more, but three keeps the
+  /// panel legible and covers the realistic cases (style + character + detail).
+  let maxLoRASlots = 3
+  var canAddLoRASlot: Bool { loraSlots.count < maxLoRASlots && !compatibleLoras.isEmpty }
+
+  func addLoRASlot() {
+    guard loraSlots.count < maxLoRASlots else { return }
+    loraSlots.append(LoraSlot())
+  }
+
+  func removeLoRASlot(id: UUID) {
+    loraSlots.removeAll { $0.id == id }
+  }
+
   /// Weight band for a slot's chosen LoRA — its catalog `weight_range` if
   /// known, else a sensible default. Used to bound the slider.
-  func weightRange(forSlot i: Int) -> ClosedRange<Double> {
-    if let r = loraAsset(loraSlots[i].loraID)?.weightRange, r.lower < r.upper {
+  func weightRange(for slot: LoraSlot) -> ClosedRange<Double> {
+    if let r = loraAsset(slot.loraID)?.weightRange, r.lower < r.upper {
       return r.lower...r.upper
     }
     return 0...1.5
   }
 
   /// On selecting a LoRA, seed its slot with the catalog-recommended weight.
-  func applyRecommendedWeight(slot i: Int) {
-    guard let r = loraAsset(loraSlots[i].loraID)?.weightRange else { return }
+  func applyRecommendedWeight(slotID: UUID) {
+    guard let i = loraSlots.firstIndex(where: { $0.id == slotID }),
+      let r = loraAsset(loraSlots[i].loraID)?.weightRange else { return }
     loraSlots[i].weight = r.recommended
   }
 
@@ -269,10 +314,19 @@ final class GenerateModel: ObservableObject {
     var req = URLRequest(url: url)
     req.timeoutInterval = 5
     authorized(&req)
+    // On a transport error or non-200 the catalog is *unknown*, not empty —
+    // surface that, otherwise the dropdown's "none installed" empty state is
+    // indistinguishable from the server being down.
     do {
-      let (data, _) = try await URLSession.shared.data(for: req)
+      let (data, response) = try await URLSession.shared.data(for: req)
+      guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+        errorText = "Couldn't load the \(type == "lora" ? "LoRA" : "model") list "
+          + "(HTTP \((response as? HTTPURLResponse)?.statusCode ?? -1))."
+        return []
+      }
       return (try? JSONDecoder().decode(GenAssetList.self, from: data))?.items ?? []
     } catch {
+      errorText = "Couldn't reach the server at \(endpoint) — is it running?"
       return []
     }
   }
@@ -292,24 +346,46 @@ final class GenerateModel: ObservableObject {
   }
 
   private func installLoRA(from url: URL) async {
-    guard let endpointURL = URL(string: "\(endpoint)/v1/assets/install") else { return }
     isImportingLoRA = true
-    errorText = nil
     statusText = "Importing LoRA…"
     defer { isImportingLoRA = false }
+    guard let asset = await performInstall(
+      assetType: "lora", path: url.path,
+      name: url.deletingPathExtension().lastPathComponent,
+      architecture: selectedModel?.architecture,
+      timeout: 120, noun: "LoRA")
+    else { return }
+    // Refresh the catalog, then add the new LoRA as a new slot (if it fits the
+    // selected model and there's room) with its recommended weight.
+    loras = await fetchAssets(type: "lora")
+    if compatibleLoras.contains(where: { $0.id == asset.id }), loraSlots.count < maxLoRASlots {
+      var slot = LoraSlot()
+      slot.loraID = asset.id
+      loraSlots.append(slot)
+      applyRecommendedWeight(slotID: slot.id)
+    }
+    statusText = "Imported \(asset.displayName)."
+  }
+
+  /// Shared core of the two local-file imports: `POST /v1/assets/install` with
+  /// `source.type = local_file`, decode the `Asset` on 200, or set `errorText`
+  /// and return nil on any failure. Each caller does its own post-success work
+  /// (slot vs model selection) so the request/error path can't drift.
+  private func performInstall(
+    assetType: String, path: String, name: String, architecture: String?,
+    timeout: TimeInterval, noun: String
+  ) async -> GenAsset? {
+    guard let endpointURL = URL(string: "\(endpoint)/v1/assets/install") else { return nil }
+    errorText = nil
 
     let body = GenInstallBody(
-      source: .init(
-        assetType: "lora",
-        path: url.path,
-        name: url.deletingPathExtension().lastPathComponent,
-        architecture: selectedModel?.architecture),
+      source: .init(assetType: assetType, path: path, name: name, architecture: architecture),
       confirmLargeDownload: true)
 
     var req = URLRequest(url: endpointURL)
     req.httpMethod = "POST"
     req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-    req.timeoutInterval = 120
+    req.timeoutInterval = timeout
     authorized(&req)
     req.httpBody = try? JSONEncoder().encode(body)
 
@@ -320,20 +396,15 @@ final class GenerateModel: ObservableObject {
       else {
         let msg = (try? JSONDecoder().decode(GenErrorBody.self, from: data))
           .flatMap { $0.detail ?? $0.title }
-        errorText = msg ?? "LoRA import failed (HTTP \(http?.statusCode ?? -1))."
+        errorText = msg ?? "\(noun) import failed (HTTP \(http?.statusCode ?? -1))."
         statusText = nil
-        return
+        return nil
       }
-      // Refresh the catalog, then drop the new LoRA into the first free slot.
-      loras = await fetchAssets(type: "lora")
-      if compatibleLoras.contains(where: { $0.id == asset.id }),
-        let i = loraSlots.firstIndex(where: { $0.loraID.isEmpty }) {
-        loraSlots[i].loraID = asset.id
-      }
-      statusText = "Imported \(asset.displayName)."
+      return asset
     } catch {
-      errorText = "LoRA import request failed: \(error.localizedDescription)"
+      errorText = "\(noun) import request failed: \(error.localizedDescription)"
       statusText = nil
+      return nil
     }
   }
 
@@ -353,61 +424,31 @@ final class GenerateModel: ObservableObject {
   }
 
   private func installModel(from url: URL) async {
-    guard let endpointURL = URL(string: "\(endpoint)/v1/assets/install") else { return }
     isImportingModel = true
-    errorText = nil
     statusText = "Importing model… (conversion can take a few minutes)"
     defer { isImportingModel = false }
-
-    // The importer auto-detects the architecture, so no hint is sent.
-    let body = GenInstallBody(
-      source: .init(
-        assetType: "base_model",
-        path: url.path,
-        name: url.deletingPathExtension().lastPathComponent,
-        architecture: nil),
-      confirmLargeDownload: true)
-
-    var req = URLRequest(url: endpointURL)
-    req.httpMethod = "POST"
-    req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-    // Base-model conversion is heavy (minutes for a large model) and the call
-    // is synchronous, so give it a generous ceiling.
-    req.timeoutInterval = 1800
-    authorized(&req)
-    req.httpBody = try? JSONEncoder().encode(body)
-
-    do {
-      let (data, response) = try await URLSession.shared.data(for: req)
-      let http = response as? HTTPURLResponse
-      guard http?.statusCode == 200, let asset = try? JSONDecoder().decode(GenAsset.self, from: data)
-      else {
-        let msg = (try? JSONDecoder().decode(GenErrorBody.self, from: data))
-          .flatMap { $0.detail ?? $0.title }
-        errorText = msg ?? "Model import failed (HTTP \(http?.statusCode ?? -1))."
-        statusText = nil
-        return
-      }
-      // Refresh the catalog and select the freshly imported model.
-      models = await fetchAssets(type: "base_model")
-      if models.contains(where: { $0.id == asset.id }) {
-        selectedModelID = asset.id  // triggers onModelChange → resolve
-      }
-      statusText = "Imported \(asset.displayName)."
-    } catch {
-      errorText = "Model import request failed: \(error.localizedDescription)"
-      statusText = nil
+    // The importer auto-detects the architecture, so no hint is sent. Base-model
+    // conversion is heavy (minutes for a large model) and the call is
+    // synchronous, so give it a generous timeout ceiling.
+    guard let asset = await performInstall(
+      assetType: "base_model", path: url.path,
+      name: url.deletingPathExtension().lastPathComponent,
+      architecture: nil,
+      timeout: 1800, noun: "Model")
+    else { return }
+    // Refresh the catalog and select the freshly imported model.
+    models = await fetchAssets(type: "base_model")
+    if models.contains(where: { $0.id == asset.id }) {
+      selectedModelID = asset.id  // triggers onModelChange → resolve
     }
+    statusText = "Imported \(asset.displayName)."
   }
 
   private func onModelChange() {
-    // Drop any LoRA selections incompatible with the new model (this mutates
-    // loraSlots, which itself invalidates the resolve via its didSet).
+    // Drop LoRA slots incompatible with the new model (this mutates loraSlots,
+    // which itself invalidates the resolve via its didSet).
     let valid = Set(compatibleLoras.map { $0.id })
-    for i in loraSlots.indices where !loraSlots[i].loraID.isEmpty
-      && !valid.contains(loraSlots[i].loraID) {
-      loraSlots[i].loraID = ""
-    }
+    loraSlots.removeAll { !$0.loraID.isEmpty && !valid.contains($0.loraID) }
     invalidateResolve()
   }
 
@@ -415,15 +456,52 @@ final class GenerateModel: ObservableObject {
   private func invalidateResolve() {
     resolved = false
     warnings = []
+    scheduleAutoResolve()
   }
 
-  /// The primary button: resolve first, then (once resolved cleanly) generate.
-  func primaryAction() async {
-    if resolved {
-      await generate()
-    } else {
+  /// Resolve the model's defaults in the background after a short debounce, so
+  /// rapid edits (typing a model, nudging LoRAs) collapse into one request and
+  /// the Advanced fields are ready by the time the user reaches for Generate.
+  private func scheduleAutoResolve() {
+    resolveTask?.cancel()
+    guard !selectedModelID.isEmpty else { return }
+    resolveTask = Task {
+      try? await Task.sleep(nanoseconds: 400_000_000)
+      guard !Task.isCancelled else { return }
       await resolveDefaults()
     }
+  }
+
+  /// The primary button is always "Generate". Defaults are normally already
+  /// resolved in the background; if a resolve is still pending (or hasn't run),
+  /// do it inline first, then generate — unless resolve surfaced an error that
+  /// would make the request fail.
+  func primaryAction() async {
+    resolveTask?.cancel()
+    if !resolved { await resolveDefaults() }
+    guard resolved else { return }
+    await generate()
+  }
+
+  /// Launch the primary action as a tracked Task so Stop / window-close can
+  /// cancel the in-flight request. Resolve is quick and not worth tracking;
+  /// only retain the handle once we're actually generating.
+  func startPrimaryAction() {
+    genTask = Task { await primaryAction() }
+  }
+
+  /// Re-run with the previous seed, tracked like `startPrimaryAction`.
+  func startReuse() {
+    genTask = Task { await generate(reuseSeed: true) }
+  }
+
+  /// Abort any in-flight generation and stop server-side work — called when the
+  /// window closes so a detached request can't keep the GPU busy with no UI.
+  func teardown() {
+    resolveTask?.cancel()
+    toastTask?.cancel()
+    genTask?.cancel()
+    Task { await cancel() }
   }
 
   /// Dry-run the request with no advanced params set, so the engine reports
@@ -475,9 +553,15 @@ final class GenerateModel: ObservableObject {
         if let smp = params.sampler, Self.samplers.contains(smp) { sampler = smp }
       }
       warnings = decoded.warnings?.compactMap { $0.message ?? $0.code } ?? []
-      statusText = "Resolved. Review params, then Generate."
+      statusText = nil
       resolved = true
     } catch {
+      // A superseded resolve (newer edit, or the user hit Generate) cancels the
+      // URLSession task — that's not a user-facing failure, stay quiet.
+      if (error as? URLError)?.code == .cancelled || error is CancellationError {
+        resolved = false
+        return
+      }
       errorText = "Resolve request failed: \(error.localizedDescription)"
       resolved = false
     }
@@ -541,14 +625,17 @@ final class GenerateModel: ObservableObject {
     }
   }
 
-  /// Cancel the in-flight generation (`DELETE /v1/runs/{id}`); the compose
-  /// request then returns and `generate()` reports "Cancelled".
+  /// Cancel the in-flight generation. Sends `DELETE /v1/runs/{id}` so the
+  /// server stops the actual GPU work, *and* cancels the local Task so the
+  /// compose request unblocks immediately even if the server ignores the
+  /// DELETE (otherwise the UI would hang on it until the 600s timeout).
   func cancel() async {
-    guard let id = currentRunID,
-      let encoded = id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
+    guard let id = currentRunID else { return }
+    wasCancelled = true
+    defer { genTask?.cancel() }
+    guard let encoded = id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
       let url = URL(string: "\(endpoint)/v1/runs/\(encoded)")
     else { return }
-    wasCancelled = true
     var req = URLRequest(url: url)
     req.httpMethod = "DELETE"
     authorized(&req)
@@ -624,7 +711,19 @@ final class GenerateModel: ObservableObject {
   func copyCurl() {
     NSPasteboard.general.clearContents()
     NSPasteboard.general.setString(curlCommand(), forType: .string)
-    statusText = "curl copied to clipboard"
+    flashToast("curl copied")
+  }
+
+  /// Show a transient confirmation that clears itself, so quick actions get
+  /// feedback without leaving a stale line behind.
+  func flashToast(_ message: String) {
+    toast = message
+    toastTask?.cancel()
+    toastTask = Task {
+      try? await Task.sleep(nanoseconds: 2_000_000_000)
+      guard !Task.isCancelled else { return }
+      toast = nil
+    }
   }
 
   /// Save the in-memory PNG to a user-chosen location. The only path to disk.
@@ -634,8 +733,13 @@ final class GenerateModel: ObservableObject {
     panel.allowedContentTypes = [.png]
     panel.nameFieldStringValue = "generated.png"
     panel.canCreateDirectories = true
-    if panel.runModal() == .OK, let url = panel.url {
-      try? data.write(to: url)
+    guard panel.runModal() == .OK, let url = panel.url else { return }
+    do {
+      try data.write(to: url)
+      errorText = nil
+      flashToast("Saved \(url.lastPathComponent)")
+    } catch {
+      errorText = "Couldn't save the image: \(error.localizedDescription)"
     }
   }
 
@@ -644,7 +748,7 @@ final class GenerateModel: ObservableObject {
     guard let data = imageData, let image = NSImage(data: data) else { return }
     NSPasteboard.general.clearContents()
     NSPasteboard.general.writeObjects([image])
-    statusText = "Image copied to clipboard"
+    flashToast("Image copied")
   }
 
   /// Open the result full-size in the default viewer (Preview) via a temp file.
@@ -657,8 +761,13 @@ final class GenerateModel: ObservableObject {
     guard let data = imageData else { return nil }
     let url = FileManager.default.temporaryDirectory
       .appendingPathComponent("dht-generated-\(uuid()).png")
-    try? data.write(to: url)
-    return url
+    do {
+      try data.write(to: url)
+      return url
+    } catch {
+      errorText = "Couldn't open the image: \(error.localizedDescription)"
+      return nil
+    }
   }
 }
 
@@ -674,69 +783,91 @@ struct GenerateView: View {
   @GestureState private var dragPan: CGSize = .zero
 
   var body: some View {
-    HSplitView {
-      formColumn
-        .frame(minWidth: 320, idealWidth: 360)
-      resultColumn
-        .frame(minWidth: 320)
+    VStack(spacing: 0) {
+      headerBar
+      Divider()
+      HSplitView {
+        formColumn
+          .frame(minWidth: 320, idealWidth: 360)
+        resultColumn
+          .frame(minWidth: 360)
+      }
     }
     .task { await model.loadAssets() }
+    // Window closing tears down the view: abort any in-flight generation so a
+    // detached request can't keep the GPU busy with no UI to show its result.
+    .onDisappear { model.teardown() }
+  }
+
+  /// Toolbar-like header: the model + format are the run's context, so they live
+  /// above both columns rather than buried in the form. Import lives here too,
+  /// as a compact menu next to the model it manages.
+  private var headerBar: some View {
+    HStack(spacing: 10) {
+      if model.models.isEmpty {
+        Label("No base model", systemImage: "cube.box")
+          .foregroundStyle(.secondary)
+      } else {
+        Picker("Model", selection: $model.selectedModelID) {
+          ForEach(model.models) { m in Text(m.displayName).tag(m.id) }
+        }
+        .labelsHidden()
+        .frame(maxWidth: 260)
+      }
+      importMenu
+
+      Spacer(minLength: 12)
+
+      Picker("Format", selection: $model.format) {
+        ForEach(GenFormat.allCases) { f in
+          Label(f.shortLabel, systemImage: f.icon).tag(f)
+        }
+      }
+      .pickerStyle(.segmented)
+      .labelsHidden()
+      .fixedSize()
+      .help("\(model.format.width)×\(model.format.height)")
+    }
+    .padding(.horizontal, 12)
+    .padding(.vertical, 8)
+    .background(.bar)
+  }
+
+  /// Compact import affordance — a base model can be imported with an empty
+  /// catalog; a LoRA needs a model first (to tag compatibility), so it's hidden
+  /// until one exists.
+  private var importMenu: some View {
+    Menu {
+      Button("Import Model…") { Task { await model.importModel() } }
+      if !model.models.isEmpty {
+        Button("Import LoRA…") { Task { await model.importLoRA() } }
+      }
+    } label: {
+      if model.isImportingModel || model.isImportingLoRA {
+        ProgressView().controlSize(.small)
+      } else {
+        Image(systemName: "plus.circle")
+      }
+    }
+    .menuIndicator(.hidden)
+    .fixedSize()
+    .disabled(model.isImportingModel || model.isImportingLoRA)
+    .help("Import a model or LoRA from a local file")
   }
 
   private var formColumn: some View {
     Form {
-      Section("Model") {
-        if model.models.isEmpty {
-          Text("No base models installed. Install one (the catalog, "
-               + "POST /v1/assets/install, or Import Model… below), then it appears here.")
-            .font(.caption).foregroundStyle(.secondary)
-        } else {
-          Picker("Model", selection: $model.selectedModelID) {
-            ForEach(model.models) { m in Text(m.displayName).tag(m.id) }
-          }
-          ForEach(model.loraSlots.indices, id: \.self) { i in
-            Picker("LoRA \(i + 1)", selection: $model.loraSlots[i].loraID) {
-              Text("None").tag("")
-              ForEach(model.compatibleLoras) { l in Text(l.displayName).tag(l.id) }
-            }
-            .onChange(of: model.loraSlots[i].loraID) { model.applyRecommendedWeight(slot: i) }
-            if !model.loraSlots[i].loraID.isEmpty {
-              HStack {
-                Text("Weight").font(.caption).foregroundStyle(.secondary)
-                Slider(value: $model.loraSlots[i].weight, in: model.weightRange(forSlot: i))
-                Text(String(format: "%.2f", model.loraSlots[i].weight))
-                  .monospacedDigit().frame(width: 40, alignment: .trailing)
-              }
-            }
-          }
-        }
-        // Import controls. A base model can be imported even with an empty
-        // catalog; a LoRA needs a selected model to tag it compatible.
-        HStack {
-          Button("Import Model…") { Task { await model.importModel() } }
-            .disabled(model.isImportingModel || model.isImportingLoRA)
-          if !model.models.isEmpty {
-            Button("Import LoRA…") { Task { await model.importLoRA() } }
-              .disabled(model.isImportingLoRA || model.isImportingModel)
-          }
-          if model.isImportingModel || model.isImportingLoRA {
-            ProgressView().controlSize(.small)
-          }
-        }
-      }
-
       Section("Prompt") {
         TextField("Prompt", text: $model.prompt, axis: .vertical)
           .lineLimit(2...5)
         TextField("Negative prompt", text: $model.negativePrompt, axis: .vertical)
           .lineLimit(1...3)
-        Picker("Format", selection: $model.format) {
-          ForEach(GenFormat.allCases) { f in Text(f.rawValue).tag(f) }
-        }
       }
 
+      loraSection
+
       Section {
-        DisclosureGroup("Advanced (from resolve)") {
+        DisclosureGroup("Advanced (model defaults)") {
           HStack {
             Text("Steps")
             Spacer()
@@ -755,7 +886,8 @@ struct GenerateView: View {
           }
         }
         if model.isResolving {
-          Text("Resolving defaults…").font(.caption).foregroundStyle(.secondary)
+          Label("Loading model defaults…", systemImage: "wand.and.stars")
+            .font(.caption).foregroundStyle(.secondary)
         }
         ForEach(model.warnings, id: \.self) { w in
           Label(w, systemImage: "info.circle")
@@ -764,37 +896,106 @@ struct GenerateView: View {
       }
 
       Section {
-        HStack {
-          Button(action: { Task { await model.primaryAction() } }) {
-            if model.isGenerating || model.isResolving {
+        Button(action: { model.startPrimaryAction() }) {
+          Group {
+            if model.isGenerating {
               ProgressView().controlSize(.small)
             } else {
-              Text(model.resolved ? "Generate" : "Resolve")
+              Text("Generate")
             }
           }
-          .keyboardShortcut(.return, modifiers: [])
-          .buttonStyle(.borderedProminent)
-          .disabled(model.isGenerating || model.isResolving || model.selectedModelID.isEmpty)
-
-          Button("Copy as curl") { model.copyCurl() }
-            .disabled(model.selectedModelID.isEmpty)
+          .frame(maxWidth: .infinity)
         }
+        .keyboardShortcut(.return, modifiers: [])
+        .buttonStyle(.borderedProminent)
+        .controlSize(.large)
+        .disabled(model.isGenerating || model.selectedModelID.isEmpty)
+
+        Button("Copy as curl") { model.copyCurl() }
+          .buttonStyle(.link)
+          .font(.caption)
+          .disabled(model.selectedModelID.isEmpty)
+
         if let status = model.statusText {
           Text(status).font(.caption).foregroundStyle(.secondary)
         }
         if let err = model.errorText {
           Label(err, systemImage: "exclamationmark.triangle.fill")
-            .font(.caption).foregroundStyle(.orange)
+            .font(.callout)
+            .foregroundStyle(.red)
+            .padding(8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 6).fill(Color.red.opacity(0.12)))
         }
       }
     }
     .formStyle(.grouped)
   }
 
+  /// LoRAs as a dynamic list: nothing shown until the user adds one, each row
+  /// removable, capped at `maxLoRASlots`. Replaces the three always-present
+  /// empty pickers.
+  @ViewBuilder private var loraSection: some View {
+    Section("LoRAs") {
+      if model.selectedModelID.isEmpty {
+        Text("Select a model to add LoRAs.")
+          .font(.caption).foregroundStyle(.secondary)
+      } else if model.compatibleLoras.isEmpty && model.loraSlots.isEmpty {
+        Text("No compatible LoRAs for this model.")
+          .font(.caption).foregroundStyle(.secondary)
+      } else {
+        ForEach($model.loraSlots) { $slot in
+          Picker("LoRA", selection: $slot.loraID) {
+            Text("None").tag("")
+            ForEach(model.compatibleLoras) { l in Text(l.displayName).tag(l.id) }
+          }
+          .labelsHidden()
+          .onChange(of: slot.loraID) { model.applyRecommendedWeight(slotID: slot.id) }
+
+          HStack {
+            if !slot.loraID.isEmpty {
+              Text("Weight").font(.caption).foregroundStyle(.secondary)
+              Slider(value: $slot.weight, in: model.weightRange(for: slot))
+              Text(String(format: "%.2f", slot.weight))
+                .monospacedDigit().frame(width: 40, alignment: .trailing)
+            } else {
+              Spacer()
+            }
+            Button(role: .destructive) { model.removeLoRASlot(id: slot.id) } label: {
+              Image(systemName: "minus.circle")
+            }
+            .buttonStyle(.borderless)
+            .help("Remove this LoRA")
+          }
+        }
+
+        if model.canAddLoRASlot {
+          Button { model.addLoRASlot() } label: {
+            Label("Add LoRA", systemImage: "plus")
+          }
+        }
+      }
+    }
+  }
+
   /// What fills the image box: the live preview while generating, otherwise
   /// the final result.
   private var displayImageData: Data? {
     model.isGenerating ? model.previewData : model.imageData
+  }
+
+  /// Context-aware empty state — point the user at the next useful step rather
+  /// than a generic "appears here".
+  private var placeholderIcon: String {
+    if model.isGenerating { return "hourglass" }
+    if model.models.isEmpty { return "cube.box" }
+    return "photo"
+  }
+  private var placeholderText: String {
+    if model.isGenerating { return "Generating…" }
+    if model.models.isEmpty { return "Import a base model to start" }
+    if model.selectedModelID.isEmpty { return "Select a model to start" }
+    return "Your image appears here"
   }
 
   /// Trackpad pinch → zoom (1×–8×). Live scale via `pinch`, committed to `zoom`.
@@ -833,17 +1034,23 @@ struct GenerateView: View {
             .simultaneousGesture(panGesture)
             .onTapGesture(count: 2) { withAnimation { zoom = 1; pan = .zero } }
             .padding(6)
+            .transition(.opacity)
         } else {
-          VStack(spacing: 6) {
-            Image(systemName: model.isGenerating ? "hourglass" : "photo")
-              .font(.system(size: 40)).foregroundStyle(.tertiary)
-            Text(model.isGenerating ? "Generating…" : "The generated image appears here")
-              .font(.caption).foregroundStyle(.secondary)
+          VStack(spacing: 8) {
+            Image(systemName: placeholderIcon)
+              .font(.system(size: 44)).foregroundStyle(.tertiary)
+            Text(placeholderText)
+              .font(.callout).foregroundStyle(.secondary)
+              .multilineTextAlignment(.center)
           }
+          .padding()
         }
       }
       .frame(maxWidth: .infinity, maxHeight: .infinity)
       .clipped()
+      // Cross-fade the final result in (preview frames swap instantly; only a
+      // new finished image animates).
+      .animation(.easeInOut(duration: 0.3), value: model.imageData)
       // Each new result (or a new run) starts back at fit.
       .onChange(of: model.imageData) { zoom = 1; pan = .zero }
       .onChange(of: model.isGenerating) { if model.isGenerating { zoom = 1; pan = .zero } }
@@ -862,22 +1069,38 @@ struct GenerateView: View {
           }
           Button("Stop", role: .destructive) { Task { await model.cancel() } }
             .controlSize(.small)
+            .keyboardShortcut(".", modifiers: .command)
         }
       } else {
         HStack {
           if let seed = model.lastSeed {
             Text("seed: \(String(seed))").font(.caption).monospacedDigit().textSelection(.enabled)
-            Button("Reuse") { Task { await model.generate(reuseSeed: true) } }
+            Button("Reuse") { model.startReuse() }
               .controlSize(.small)
           }
           Spacer()
           Button("Copy") { model.copyImage() }.disabled(model.imageData == nil)
           Button("Open") { model.openImage() }.disabled(model.imageData == nil)
-          Button("Save…") { model.save() }.disabled(model.imageData == nil)
+          Button("Save…") { model.save() }
+            .disabled(model.imageData == nil)
+            .keyboardShortcut("s", modifiers: .command)
         }
       }
     }
     .padding(12)
+    // Transient confirmations float over the result, then fade.
+    .overlay(alignment: .bottom) {
+      if let toast = model.toast {
+        Text(toast)
+          .font(.caption)
+          .padding(.horizontal, 14).padding(.vertical, 8)
+          .background(.thinMaterial, in: Capsule())
+          .overlay(Capsule().strokeBorder(.separator))
+          .padding(.bottom, 56)
+          .transition(.opacity.combined(with: .move(edge: .bottom)))
+      }
+    }
+    .animation(.easeInOut(duration: 0.2), value: model.toast)
   }
 }
 
