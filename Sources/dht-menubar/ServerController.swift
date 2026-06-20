@@ -66,9 +66,14 @@ final class ServerController: ObservableObject {
   /// True when the server is up and at least one generation is in flight.
   var isBusy: Bool { status == .running && !runs.isEmpty }
 
-  /// Menu-bar icon: server-state symbol, or a distinct one while a job runs
-  /// (paired with a pulse effect, so it reads even without the animation).
+  /// Menu-bar icon: server-state symbol, or a distinct ringed glyph while a job
+  /// runs. The shape alone carries the state (monochrome template image, no
+  /// colour) — the pulse is a bonus, not the only signal.
   var menuBarSymbol: String { isBusy ? "circle.circle.fill" : status.symbolName }
+
+  /// Whether the menu-bar glyph should pulse: while a job runs and during the
+  /// transient start/stop states, so motion reinforces "something is happening".
+  var isAnimating: Bool { isBusy || status == .starting || status == .stopping }
 
   private var process: Process?
   private var outputPipe: Pipe?
