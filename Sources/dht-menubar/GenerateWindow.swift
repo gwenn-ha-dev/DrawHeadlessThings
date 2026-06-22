@@ -726,21 +726,44 @@ final class GenerateModel: ObservableObject {
     }
   }
 
-  /// Save the in-memory PNG to a user-chosen location. The only path to disk.
+  /// Quality used when re-encoding the result as JPEG on save.
+  private static let jpegSaveQuality: CGFloat = 0.9
+
+  /// Save the in-memory image to a user-chosen location. The only path to disk.
+  /// Defaults to JPEG (smaller, easy to share); PNG stays available for a
+  /// lossless copy. The server hands us lossless PNG bytes, so JPEG is a
+  /// one-shot re-encode here.
   func save() {
     guard let data = imageData else { return }
     let panel = NSSavePanel()
-    panel.allowedContentTypes = [.png]
-    panel.nameFieldStringValue = "generated.png"
+    panel.allowedContentTypes = [.jpeg, .png]
+    panel.nameFieldStringValue = "generated.jpg"
     panel.canCreateDirectories = true
     guard panel.runModal() == .OK, let url = panel.url else { return }
+    let wantsJPEG = ["jpg", "jpeg"].contains(url.pathExtension.lowercased())
+    let outData: Data
+    if wantsJPEG {
+      guard let jpeg = Self.encodeJPEG(data, quality: Self.jpegSaveQuality) else {
+        errorText = "Couldn't encode the image as JPEG."
+        return
+      }
+      outData = jpeg
+    } else {
+      outData = data
+    }
     do {
-      try data.write(to: url)
+      try outData.write(to: url)
       errorText = nil
       flashToast("Saved \(url.lastPathComponent)")
     } catch {
       errorText = "Couldn't save the image: \(error.localizedDescription)"
     }
+  }
+
+  /// Re-encode PNG (or any rep-readable) image data as JPEG at the given quality.
+  private static func encodeJPEG(_ data: Data, quality: CGFloat) -> Data? {
+    guard let rep = NSBitmapImageRep(data: data) else { return nil }
+    return rep.representation(using: .jpeg, properties: [.compressionFactor: quality])
   }
 
   /// Copy the result image to the clipboard.
