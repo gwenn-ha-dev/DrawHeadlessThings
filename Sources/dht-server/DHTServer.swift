@@ -1,3 +1,4 @@
+import Downloader
 import Foundation
 import Hummingbird
 import Logging
@@ -55,6 +56,18 @@ struct DHTServer {
     let url = URL(fileURLWithPath: config.modelsDirectory, isDirectory: true)
     MediaGenerationEnvironment.default.externalUrls = [url]
     ModelZoo.isExternalUrlsPreferred = true
+
+    // Community catalogs: fire-and-forget fetch of the models.drawthings.ai
+    // lists (generated from drawthingsai/community-models) + the file-size
+    // metadata. Each fetch validates before replacing the on-disk cache and
+    // fails silently — offline runs keep the last cached lists. The merge
+    // callbacks dispatch to the main queue, which the async main() services.
+    if config.communityModels {
+      ModelZoo.requestNetworkPayload()  // models + uncurated + file sizes + APIs
+      LoRAZoo.requestNetworkPayload()
+      ControlNetZoo.requestNetworkPayload()
+      TextualInversionZoo.requestNetworkPayload()
+    }
 
     var logger = Logger(label: "dht-server")
     logger.logLevel = config.logLevel
@@ -125,6 +138,10 @@ struct DHTServer {
       --max-active-runs <n>   Cap on concurrent generation runs (default: uncapped).
       --read-only             Refuse asset mutations (POST /v1/assets/install,
                               DELETE /v1/assets/{id}) with 403 READ_ONLY_MODE.
+      --no-community-models   Don't fetch the community catalogs
+                              (models.drawthings.ai) at startup. Community
+                              entries from a previous run's cache still
+                              appear; only the refresh is skipped.
       --silent                Secret mode: emit no logs of any kind — no
                               startup banner, no request logs, no engine
                               logs (swift-log is bootstrapped to a no-op).

@@ -43,6 +43,15 @@ struct ServerConfig: Sendable {
   /// app additionally discards the child's stdout/stderr, so the run
   /// produces no logs of any kind.
   let silent: Bool
+  /// Fetch the community catalogs (models.drawthings.ai lists generated
+  /// from drawthingsai/community-models) at startup so community models,
+  /// LoRAs, controlnets and embeddings appear as installable suggestions
+  /// in `/v1/assets`. On by default; failures degrade silently to the
+  /// last cached lists (or none). `--no-community-models` disables the
+  /// fetch — cached lists from a previous run still apply.
+  /// (`var` with a default so the memberwise init keeps its existing
+  /// call sites — notably the test suite — source-compatible.)
+  var communityModels: Bool = true
 
   var isPrivate: Bool { scope == .private }
 
@@ -58,6 +67,7 @@ struct ServerConfig: Sendable {
     let maxActiveRuns = argValue(args, name: "--max-active-runs").flatMap(Int.init)
     let readOnly = args.contains("--read-only")
     let silent = args.contains("--silent")
+    let communityModels = !args.contains("--no-community-models")
 
     guard FileManager.default.fileExists(atPath: modelsDir) else {
       stderr("error: models directory does not exist: \(modelsDir)")
@@ -95,7 +105,8 @@ struct ServerConfig: Sendable {
       logLevel: level,
       maxActiveRuns: maxActiveRuns,
       readOnly: readOnly,
-      silent: silent
+      silent: silent,
+      communityModels: communityModels
     )
   }
 

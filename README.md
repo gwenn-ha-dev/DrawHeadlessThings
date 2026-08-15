@@ -61,7 +61,11 @@ xattr -dr com.apple.quarantine /Applications/DHTServer.app
 After that it launches normally. DHTServer.app is a menu-bar agent that runs
 the embedded `dht-server` (REST + MCP). Point it at your Draw Things models
 directory in **Settings** and it starts serving on `localhost:7766` — the server
-can also install models on demand via `POST /v1/assets/install`.
+can also install models on demand via `POST /v1/assets/install`. Asset listings
+cover the official catalog plus the
+[community catalog](https://github.com/drawthingsai/community-models)
+(refreshed at startup; disable with `--no-community-models`), each entry
+labeled `source: official | community | custom`.
 
 Prefer headless, no GUI? Build `dht-server` from source ([below](#build-from-source)),
 or run the binary embedded in the app directly:

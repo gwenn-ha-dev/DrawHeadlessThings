@@ -73,6 +73,15 @@ final class ServerConfigTests: XCTestCase {
     XCTAssertEqual(c?.readOnly, true)
   }
 
+  func testCommunityModelsOnByDefaultAndFlagDisables() {
+    let on = ServerConfig.parse(["dht-server", "--models-dir", dummyModelsDir])
+    XCTAssertEqual(on?.communityModels, true)
+    let off = ServerConfig.parse([
+      "dht-server", "--models-dir", dummyModelsDir, "--no-community-models",
+    ])
+    XCTAssertEqual(off?.communityModels, false)
+  }
+
   func testConstantTimeEqualsBehavior() {
     XCTAssertTrue(BearerAuthMiddleware<BasicRequestContext>.constantTimeEquals("a", "a"))
     XCTAssertFalse(BearerAuthMiddleware<BasicRequestContext>.constantTimeEquals("a", "b"))

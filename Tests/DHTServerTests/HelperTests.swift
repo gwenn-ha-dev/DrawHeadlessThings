@@ -285,4 +285,31 @@ final class HelperTests: XCTestCase {
     XCTAssertEqual(typed.status, .internalServerError)
     XCTAssertEqual(typed.errorCode, "ENGINE_INTERNAL_ERROR")
   }
+
+  // MARK: Asset `source` wire field
+
+  func testAssetSourceRoundtripsOnTheWire() throws {
+    let asset = BaseModelAsset(
+      type: .baseModel, id: "some_model_f16.ckpt", name: "Some Model",
+      source: .community, architecture: .flux1, domain: .image,
+      downloaded: false, recommendedResolution: nil,
+      hiresFixRecommendedResolution: nil, framesPerSecond: nil,
+      isConsistencyModel: false, supportsRemoteApi: false,
+      guidanceEmbed: nil, builtinLora: nil, isBf16: nil, deprecated: false,
+      modifier: nil, editingMode: nil, huggingFaceLink: nil, note: nil,
+      copyright: nil, installSizeBytes: nil)
+
+    let data = try JSONEncoder().encode(Asset.baseModel(asset))
+    let json = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: data) as? [String: Any])
+    XCTAssertEqual(json["source"] as? String, "community")
+
+    let decoded = try JSONDecoder().decode(Asset.self, from: data)
+    guard case .baseModel(let roundtripped) = decoded else {
+      return XCTFail("expected a base_model variant")
+    }
+    XCTAssertEqual(roundtripped.source, .community)
+    // withInstallSize must not drop the source label.
+    XCTAssertEqual(roundtripped.withInstallSize(42).source, .community)
+  }
 }

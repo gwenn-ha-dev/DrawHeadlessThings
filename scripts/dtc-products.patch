@@ -1,3 +1,63 @@
+diff --git a/Libraries/Downloader/Sources/ControlNetZoo+Downloads.swift b/Libraries/Downloader/Sources/ControlNetZoo+Downloads.swift
+index 77b6a2b..b3c9977 100644
+--- a/Libraries/Downloader/Sources/ControlNetZoo+Downloads.swift
++++ b/Libraries/Downloader/Sources/ControlNetZoo+Downloads.swift
+@@ -96,7 +96,9 @@ extension ControlNetZoo {
+     return jsonSpecifications
+   }
+ 
+-  private static var communityOnDisk: [Specification] = communityFromDisk()
++  // DrawHeadlessThings dtc-products.patch: public so the server can label
++  // downloaded assets that originated from the community catalog.
++  public static var communityOnDisk: [Specification] = communityFromDisk()
+ 
+   public static var community: [Specification] = {
+     let availableModels = Set(
+diff --git a/Libraries/Downloader/Sources/LoRAZoo+Downloads.swift b/Libraries/Downloader/Sources/LoRAZoo+Downloads.swift
+index bcf1ec5..c994c48 100644
+--- a/Libraries/Downloader/Sources/LoRAZoo+Downloads.swift
++++ b/Libraries/Downloader/Sources/LoRAZoo+Downloads.swift
+@@ -95,7 +95,9 @@ extension LoRAZoo {
+     return jsonSpecifications
+   }
+ 
+-  private static var communityOnDisk: [Specification] = communityFromDisk()
++  // DrawHeadlessThings dtc-products.patch: public so the server can label
++  // downloaded assets that originated from the community catalog.
++  public static var communityOnDisk: [Specification] = communityFromDisk()
+ 
+   public static var community: [Specification] = {
+     let availableModels = Set(
+diff --git a/Libraries/Downloader/Sources/ModelZoo+Downloads.swift b/Libraries/Downloader/Sources/ModelZoo+Downloads.swift
+index 9cd4856..94fa722 100644
+--- a/Libraries/Downloader/Sources/ModelZoo+Downloads.swift
++++ b/Libraries/Downloader/Sources/ModelZoo+Downloads.swift
+@@ -297,7 +297,9 @@ extension ModelZoo {
+     return jsonSpecifications
+   }
+ 
+-  private static var communityOnDisk: [Specification] = communityFromDisk()
++  // DrawHeadlessThings dtc-products.patch: public so the server can label
++  // downloaded assets that originated from the community catalog.
++  public static var communityOnDisk: [Specification] = communityFromDisk()
+ 
+   public static var uncuratedCommunityOnDisk: [Specification] = uncuratedCommunityFromDisk()
+ 
+diff --git a/Libraries/Downloader/Sources/TextualInversionZoo+Downloads.swift b/Libraries/Downloader/Sources/TextualInversionZoo+Downloads.swift
+index 238bb99..f9e4969 100644
+--- a/Libraries/Downloader/Sources/TextualInversionZoo+Downloads.swift
++++ b/Libraries/Downloader/Sources/TextualInversionZoo+Downloads.swift
+@@ -101,7 +101,9 @@ extension TextualInversionZoo {
+     return jsonSpecifications
+   }
+ 
+-  private static var communityOnDisk: [Specification] = communityFromDisk()
++  // DrawHeadlessThings dtc-products.patch: public so the server can label
++  // downloaded assets that originated from the community catalog.
++  public static var communityOnDisk: [Specification] = communityFromDisk()
+ 
+   public static var community: [Specification] = {
+     let availableModels = Set(
 diff --git a/Libraries/MediaGenerationKit/Sources/BaseModelImporter.swift b/Libraries/MediaGenerationKit/Sources/BaseModelImporter.swift
 new file mode 100644
 index 0000000..bf50c54
@@ -229,10 +289,10 @@ index 1ceabf7..a8dde88 100644
  
    internal final class Storage: @unchecked Sendable {
 diff --git a/Package.swift b/Package.swift
-index 45140b8..4fd1a61 100644
+index 45140b8..9fe3696 100644
 --- a/Package.swift
 +++ b/Package.swift
-@@ -9,6 +9,10 @@ let package = Package(
+@@ -9,6 +9,14 @@ let package = Package(
      .executable(name: "gRPCServerCLI", targets: ["gRPCServerCLI"]),
      .executable(name: "draw-things-cli", targets: ["DrawThingsCLI"]),
      .library(name: "_MediaGenerationKit", targets: ["_MediaGenerationKit"]),
@@ -240,6 +300,10 @@ index 45140b8..4fd1a61 100644
 +    // (ModelZoo + LoRAZoo + ControlNetZoo + EverythingZoo + UpscalerZoo +
 +    // TextualInversionZoo + TextGenerationZoo + DownloadZoo + ComputeUnits).
 +    .library(name: "ModelZoo", targets: ["ModelZoo"]),
++    // Added locally by DrawHeadlessThings — community-catalog fetch + cache
++    // (models.drawthings.ai lists generated from drawthingsai/community-models)
++    // and the file-size metadata used to avoid per-file CDN HEAD requests.
++    .library(name: "Downloader", targets: ["Downloader"]),
    ],
    dependencies: [
      .package(

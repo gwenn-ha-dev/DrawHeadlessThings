@@ -1,3 +1,4 @@
+import Downloader
 import Foundation
 import ModelZoo
 
@@ -8,10 +9,13 @@ import ModelZoo
 /// on disk, or would consume"):
 ///
 /// - **Downloaded files** → `FileManager.attributesOfItem` (cheap, exact).
-/// - **Not-downloaded files** → `HEAD https://static.libnnc.org/{file}`
-///   and read `Content-Length`. The CDN is the SDK's canonical download
-///   source (see `MediaGenerationEnvironment+Ensure.swift:202`), so we
-///   read sizes from the same place ensure() reads bytes from.
+/// - **Not-downloaded files** → first the cached
+///   `file_sizes_metadata.json` the Downloader fetch maintains (covers the
+///   official + community catalogs, no network per file), then
+///   `HEAD https://static.libnnc.org/{file}` as fallback and read
+///   `Content-Length`. The CDN is the SDK's canonical download source
+///   (see `MediaGenerationEnvironment+Ensure.swift:202`), so we read
+///   sizes from the same place ensure() reads bytes from.
 ///
 /// Sizes are cached per filename for the lifetime of the process — model
 /// checkpoint files are immutable artifacts, the cache never goes stale.
@@ -96,6 +100,13 @@ actor ModelSizeResolver {
     if let onDisk = filesystemSize(of: file) {
       fileSizeCache[file] = onDisk
       return onDisk
+    }
+    // Cached CDN metadata (local read, works offline too) before paying a
+    // per-file HEAD round-trip.
+    if let metadata = ModelZoo.fileSizeMetadata[file], metadata.size > 0 {
+      let size = Int64(metadata.size)
+      fileSizeCache[file] = size
+      return size
     }
     if !offlineMode, let remote = await headCDN(file: file) {
       fileSizeCache[file] = remote

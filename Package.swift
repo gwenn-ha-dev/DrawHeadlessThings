@@ -11,9 +11,10 @@ let package = Package(
     .executable(name: "dht-menubar", targets: ["dht-menubar"]),
   ],
   dependencies: [
-    // Local clone, patched to expose ModelZoo as a library product, to add
-    // MediaGenerationPipeline.Result.encodedData(type:), and to add the
-    // _MediaGenerationKit.BaseModelImporter facade (local base-model import).
+    // Local clone, patched to expose ModelZoo and Downloader as library
+    // products, to add MediaGenerationPipeline.Result.encodedData(type:), and
+    // to add the _MediaGenerationKit.BaseModelImporter facade (local
+    // base-model import).
     // See scripts/setup-dev.sh and scripts/dtc-products.patch.
     // The clone lives in-tree (gitignored) at .sdk-src/draw-things-community
     // at SHA bc3970cd24568d71e1d6a1543658fae54c136307.
@@ -37,6 +38,7 @@ let package = Package(
       dependencies: [
         .product(name: "_MediaGenerationKit", package: "draw-things-community"),
         .product(name: "ModelZoo", package: "draw-things-community"),
+        .product(name: "Downloader", package: "draw-things-community"),
         .product(name: "NNC", package: "s4nnc"),
         .product(name: "Hummingbird", package: "hummingbird"),
       ],

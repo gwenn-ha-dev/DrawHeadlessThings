@@ -362,18 +362,34 @@ components:
         upper:       { type: number }
         recommended: { type: number, nullable: true }
 
+    AssetSource:
+      type: string
+      description: |
+        Origin of a catalog entry.
+          - `official`: builtin engine catalog (ships with the SDK).
+          - `community`: the drawthingsai/community-models catalog
+            (models.drawthings.ai JSON lists, fetched at server startup
+            unless `--no-community-models`). Community entries with
+            `downloaded: false` are installable suggestions —
+            POST /v1/assets/install works on them like on official
+            catalog models. A community model keeps `source: community`
+            after install.
+          - `custom`: locally imported / user-registered.
+      enum: [official, community, custom]
+
     BaseModelAsset:
       type: object
       description: |
         A base diffusion model (`type: base_model`). Fields mirror the
         engine catalog `Specification` for the model.
       required:
-        [type, id, name, architecture, domain, downloaded,
+        [type, id, name, source, architecture, domain, downloaded,
          is_consistency_model, supports_remote_api, deprecated]
       properties:
         type:         { type: string, enum: [base_model] }
         id:           { type: string, description: "File name — the canonical asset id." }
         name:         { type: string }
+        source:       { $ref: '#/components/schemas/AssetSource' }
         architecture: { $ref: '#/components/schemas/Architecture' }
         domain:       { $ref: '#/components/schemas/Domain' }
         downloaded:
@@ -441,9 +457,11 @@ components:
             encoder + …).
               - For downloaded models (`downloaded: true`): exact sum
                 from the local filesystem.
-              - For not-downloaded catalog models: HEAD against the
-                canonical SDK CDN (`static.libnnc.org`), summed across
-                companions.
+              - For not-downloaded catalog models: the cached CDN
+                file-size metadata (`file_sizes_metadata.json`, fetched
+                with the community catalogs) when it covers the file,
+                otherwise HEAD against the canonical SDK CDN
+                (`static.libnnc.org`), summed across companions.
               - `null` when the size can't be honestly computed (CDN
                 unreachable for at least one companion). The server does
                 not report partial sums — they'd be misleading.
@@ -455,12 +473,13 @@ components:
       type: object
       description: "A LoRA adapter (`type: lora`)."
       required:
-        [type, id, name, compatible_architecture, domain, downloaded,
+        [type, id, name, source, compatible_architecture, domain, downloaded,
          is_consistency_model, is_loha, deprecated]
       properties:
         type: { type: string, enum: [lora] }
         id:   { type: string }
         name: { type: string }
+        source: { $ref: '#/components/schemas/AssetSource' }
         compatible_architecture:
           allOf: [{ $ref: '#/components/schemas/Architecture' }]
           description: "A LoRA targets a single architecture family (singular)."
@@ -479,12 +498,13 @@ components:
       type: object
       description: "A ControlNet model (`type: controlnet`)."
       required:
-        [type, id, name, compatible_architecture, downloaded,
+        [type, id, name, source, compatible_architecture, downloaded,
          control_type, deprecated]
       properties:
         type: { type: string, enum: [controlnet] }
         id:   { type: string }
         name: { type: string }
+        source: { $ref: '#/components/schemas/AssetSource' }
         compatible_architecture: { $ref: '#/components/schemas/Architecture' }
         downloaded: { type: boolean }
         task:
@@ -504,12 +524,13 @@ components:
         `keyword` appears in the prompt — there is no `embeddings[]`
         field on a generation request.
       required:
-        [type, id, name, compatible_architecture, downloaded,
+        [type, id, name, source, compatible_architecture, downloaded,
          keyword, length, deprecated]
       properties:
         type: { type: string, enum: [embedding] }
         id:   { type: string }
         name: { type: string }
+        source: { $ref: '#/components/schemas/AssetSource' }
         compatible_architecture: { $ref: '#/components/schemas/Architecture' }
         downloaded: { type: boolean }
         keyword:    { type: string, description: "Trigger word." }
@@ -2171,9 +2192,12 @@ paths:
         disk are returned — that is why a fresh listing looks short.
 
         To discover **installable** models, pass `downloaded=false`: the
-        response then includes the full catalogue, and every entry carries a
-        `downloaded` boolean. The `downloaded: false` rows are what the
-        server can fetch.
+        response then includes the full catalogue — official models plus
+        the community catalog (drawthingsai/community-models, refreshed at
+        startup unless `--no-community-models`) — and every entry carries a
+        `downloaded` boolean and a `source` (`official` / `community` /
+        `custom`). The `downloaded: false` rows are what the server can
+        fetch.
 
         Catalogue install works for **base models only** (an SDK limitation:
         the resolver covers base models, not LoRA / ControlNet / etc.). So

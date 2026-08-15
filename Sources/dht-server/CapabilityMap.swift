@@ -1,3 +1,4 @@
+import Downloader
 import ModelZoo
 
 // MARK: - Modifier (1:1 mirror of SDK SamplerModifier)
@@ -392,7 +393,13 @@ extension CapabilityMap {
   /// arch, empty cell) yield a 200 response with `operations: []` and a
   /// human-readable `notes` line explaining why.
   static func response(forModelId modelId: String) -> CapabilitiesResponse? {
-    guard let spec = ModelZoo.specificationForModel(modelId) else { return nil }
+    // Community suggestions are not in availableSpecifications — fall back
+    // to the cached community catalog so capabilities can be inspected
+    // before committing to a (possibly multi-GB) install.
+    guard
+      let spec = ModelZoo.specificationForModel(modelId)
+        ?? ModelZoo.communityOnDisk.first(where: { $0.file == modelId })
+    else { return nil }
     let archRaw = spec.version.rawValue
     let modifierRaw = spec.modifier?.rawValue ?? "none"
 

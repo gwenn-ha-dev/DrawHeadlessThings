@@ -7,6 +7,21 @@ reaches 1.0. Pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- **Community model catalog.** Asset listings now include the
+  [drawthingsai/community-models](https://github.com/drawthingsai/community-models)
+  catalog (base models, LoRAs, ControlNets, embeddings) as installable
+  suggestions, fetched from `models.drawthings.ai` at startup — disable with
+  `--no-community-models`; offline runs degrade silently to the last cached
+  lists. Every base-model / LoRA / ControlNet / embedding asset now carries a
+  `source` field (`official` / `community` / `custom`), and a community model
+  keeps `source: community` after install. Install-size resolution now reads
+  the cached CDN `file_sizes_metadata.json` first and only falls back to
+  per-file HEAD requests when the metadata doesn't cover a file. The
+  `dtc-products.patch` additionally exposes the engine's `Downloader` library
+  and its `communityOnDisk` catalogs.
+
 ### Changed
 
 - **Engine bump: draw-things-community `9f3f04b` → `bc3970c`** (2026-05-18 →

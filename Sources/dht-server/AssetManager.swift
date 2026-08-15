@@ -1,5 +1,58 @@
+import Downloader
 import Foundation
 import ModelZoo
+
+/// Classifies catalog entries by origin for the `source` field. Built once
+/// per `list()` call — the community catalogs are in-memory arrays (loaded
+/// from the on-disk cache the `Downloader` fetch maintains), so this is a
+/// handful of Set constructions, no I/O beyond the small custom_lora.json.
+private struct SourceIndex {
+  /// Full (unfiltered) community catalogs per Zoo — membership survives
+  /// install, so a downloaded community model keeps `source: community`.
+  private let communityBaseModels: Set<String>
+  private let communityLoRAs: Set<String>
+  private let communityControlNets: Set<String>
+  private let communityEmbeddings: Set<String>
+  /// LoRAs registered in the models dir's custom_lora.json (local imports).
+  private let customLoRAs: Set<String>
+
+  init() {
+    communityBaseModels = Set(ModelZoo.communityOnDisk.map(\.file))
+    communityLoRAs = Set(LoRAZoo.communityOnDisk.map(\.file))
+    communityControlNets = Set(ControlNetZoo.communityOnDisk.map(\.file))
+    communityEmbeddings = Set(TextualInversionZoo.communityOnDisk.map(\.file))
+    customLoRAs = Self.customRegistryFiles("custom_lora.json")
+  }
+
+  private static func customRegistryFiles(_ registryName: String) -> Set<String> {
+    guard let externalUrl = ModelZoo.externalUrls.first else { return [] }
+    let jsonURL = externalUrl.appendingPathComponent(registryName)
+    guard let data = try? Data(contentsOf: jsonURL),
+      let entries = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+    else { return [] }
+    return Set(entries.compactMap { $0["file"] as? String })
+  }
+
+  func baseModel(_ file: String) -> AssetSource {
+    if communityBaseModels.contains(file) { return .community }
+    return ModelZoo.isBuiltinModel(file) ? .official : .custom
+  }
+
+  func lora(_ file: String) -> AssetSource {
+    if communityLoRAs.contains(file) { return .community }
+    return customLoRAs.contains(file) ? .custom : .official
+  }
+
+  // ControlNets and embeddings have no DHT-managed custom registry, so
+  // anything outside the community catalog is official.
+  func controlnet(_ file: String) -> AssetSource {
+    communityControlNets.contains(file) ? .community : .official
+  }
+
+  func embedding(_ file: String) -> AssetSource {
+    communityEmbeddings.contains(file) ? .community : .official
+  }
+}
 
 /// Read-only asset catalog. Each filter dispatches to the right Zoo and produces
 /// strongly-typed `Asset` variants — no flat-with-optionals soup.
@@ -38,7 +91,13 @@ actor AssetManager {
   func estimatedInstallSize(for source: InstallSource) async -> Int64? {
     switch source {
     case .catalog(let model):
-      guard let spec = ModelZoo.specificationForModel(model) else { return nil }
+      // Community suggestions are not in availableSpecifications — fall
+      // back to the cached community catalog so the LARGE_MODEL_DOWNLOAD
+      // gate covers them too.
+      guard
+        let spec = ModelZoo.specificationForModel(model)
+          ?? ModelZoo.communityOnDisk.first(where: { $0.file == model })
+      else { return nil }
       return await sizeResolver.installSize(forBaseModel: spec)
     case .localFile(_, let path, _, _):
       let attrs = try? FileManager.default.attributesOfItem(atPath: path)
@@ -48,20 +107,57 @@ actor AssetManager {
 
   func list(filter: Filter = Filter()) async -> [Asset] {
     var all: [Asset] = []
+    let sources = SourceIndex()
+    // Community specs the size-enricher can fall back on — suggestions are
+    // not in `ModelZoo.availableSpecifications`, so `specificationForModel`
+    // can't resolve them.
+    var communityBaseSpecs: [String: ModelZoo.Specification] = [:]
 
     if filter.type == nil || filter.type == .baseModel {
-      all.append(contentsOf: ModelZoo.availableSpecifications.map { .baseModel(BaseModelAsset($0)) })
+      all.append(
+        contentsOf: ModelZoo.availableSpecifications.map {
+          .baseModel(BaseModelAsset($0, source: sources.baseModel($0.file)))
+        })
+      // Community suggestions: not-downloaded catalog entries from
+      // models.drawthings.ai. `ModelZoo.community` already excludes
+      // downloaded models; the id guard drops entries that shadow a
+      // catalog spec (and downloads that happened after the last
+      // community refresh).
+      let listed = Set(ModelZoo.availableSpecifications.map(\.file))
+      for spec in ModelZoo.community where !listed.contains(spec.file) {
+        communityBaseSpecs[spec.file] = spec
+        all.append(.baseModel(BaseModelAsset(spec, source: .community)))
+      }
     }
     if filter.type == nil || filter.type == .lora {
-      all.append(contentsOf: LoRAZoo.availableSpecifications.map { .lora(LoRAAsset($0)) })
+      all.append(
+        contentsOf: LoRAZoo.availableSpecifications.map {
+          .lora(LoRAAsset($0, source: sources.lora($0.file)))
+        })
+      let listed = Set(LoRAZoo.availableSpecifications.map(\.file))
+      for spec in LoRAZoo.community where !listed.contains(spec.file) {
+        all.append(.lora(LoRAAsset(spec, source: .community)))
+      }
     }
     if filter.type == nil || filter.type == .controlnet {
       all.append(
-        contentsOf: ControlNetZoo.availableSpecifications.map { .controlnet(ControlNetAsset($0)) })
+        contentsOf: ControlNetZoo.availableSpecifications.map {
+          .controlnet(ControlNetAsset($0, source: sources.controlnet($0.file)))
+        })
+      let listed = Set(ControlNetZoo.availableSpecifications.map(\.file))
+      for spec in ControlNetZoo.community where !listed.contains(spec.file) {
+        all.append(.controlnet(ControlNetAsset(spec, source: .community)))
+      }
     }
     if filter.type == nil || filter.type == .embedding {
       all.append(
-        contentsOf: TextualInversionZoo.availableSpecifications.map { .embedding(EmbeddingAsset($0)) })
+        contentsOf: TextualInversionZoo.availableSpecifications.map {
+          .embedding(EmbeddingAsset($0, source: sources.embedding($0.file)))
+        })
+      let listed = Set(TextualInversionZoo.availableSpecifications.map(\.file))
+      for spec in TextualInversionZoo.community where !listed.contains(spec.file) {
+        all.append(.embedding(EmbeddingAsset(spec, source: .community)))
+      }
     }
     if filter.type == nil || filter.type == .upscaler {
       all.append(contentsOf: UpscalerZoo.availableSpecifications.map { .upscaler(UpscalerAsset($0)) })
@@ -90,7 +186,7 @@ actor AssetManager {
     // Filters applied first so we only HEAD CDN URLs for assets that
     // actually survive — avoids wasted network on hidden-by-filter
     // catalog entries.
-    return await enrichBaseModelSizes(all)
+    return await enrichBaseModelSizes(all, communitySpecs: communityBaseSpecs)
   }
 
   func get(id: String) async -> Asset? {
@@ -102,11 +198,14 @@ actor AssetManager {
   /// resolution is sub-millisecond; CDN HEAD takes ~100ms cold but the
   /// `ModelSizeResolver` cache means subsequent calls in the same
   /// server process are instant.
-  private func enrichBaseModelSizes(_ assets: [Asset]) async -> [Asset] {
+  private func enrichBaseModelSizes(
+    _ assets: [Asset],
+    communitySpecs: [String: ModelZoo.Specification] = [:]
+  ) async -> [Asset] {
     let baseSpecs: [(Int, ModelZoo.Specification)] = assets.enumerated().compactMap {
       (offset, asset) in
       guard case .baseModel(let bm) = asset,
-        let spec = ModelZoo.specificationForModel(bm.id)
+        let spec = ModelZoo.specificationForModel(bm.id) ?? communitySpecs[bm.id]
       else { return nil }
       return (offset, spec)
     }

@@ -61,6 +61,19 @@ enum Domain: String, Codable, Sendable {
   case video
 }
 
+/// Origin of a catalog entry.
+/// - `official`: builtin engine catalog (ships with the SDK).
+/// - `community`: the drawthingsai/community-models catalog, served as JSON
+///   lists from models.drawthings.ai. Labeled by membership in the cached
+///   community list, so a community model stays `community` after install.
+/// - `custom`: locally imported / user-registered (custom.json), and any
+///   spec the server can't attribute to either catalog.
+enum AssetSource: String, Codable, Sendable {
+  case official
+  case community
+  case custom
+}
+
 /// Agent-facing semantic category derived from a base model's
 /// `SamplerModifier`. Lets a caller decide *which generation endpoint to
 /// use* and *what shape the prompt + inputs take* without having to
@@ -153,6 +166,7 @@ struct BaseModelAsset: Codable, Sendable {
   let type: AssetType                  // always .baseModel — serialized
   let id: String                       // file name (canonical id)
   let name: String
+  let source: AssetSource
   let architecture: Architecture
   let domain: Domain
   let downloaded: Bool
@@ -181,7 +195,7 @@ struct BaseModelAsset: Codable, Sendable {
   let installSizeBytes: Int64?
 
   enum CodingKeys: String, CodingKey {
-    case type, id, name, architecture, domain, downloaded
+    case type, id, name, source, architecture, domain, downloaded
     case recommendedResolution = "recommended_resolution"
     case hiresFixRecommendedResolution = "hires_fix_recommended_resolution"
     case framesPerSecond = "frames_per_second"
@@ -202,6 +216,7 @@ struct LoRAAsset: Codable, Sendable {
   let type: AssetType
   let id: String
   let name: String
+  let source: AssetSource
   let compatibleArchitecture: Architecture    // singular — a LoRA targets one architecture family
   let domain: Domain                          // derived from compatibleArchitecture
   let downloaded: Bool
@@ -213,7 +228,7 @@ struct LoRAAsset: Codable, Sendable {
   let note: String?
 
   enum CodingKeys: String, CodingKey {
-    case type, id, name
+    case type, id, name, source
     case compatibleArchitecture = "compatible_architecture"
     case domain, downloaded
     case weightRange = "weight_range"
@@ -227,6 +242,7 @@ struct ControlNetAsset: Codable, Sendable {
   let type: AssetType
   let id: String
   let name: String
+  let source: AssetSource
   let compatibleArchitecture: Architecture
   let downloaded: Bool
   let task: ControlNetTask?                   // hint type — nil if unrecognized
@@ -234,7 +250,7 @@ struct ControlNetAsset: Codable, Sendable {
   let deprecated: Bool
 
   enum CodingKeys: String, CodingKey {
-    case type, id, name
+    case type, id, name, source
     case compatibleArchitecture = "compatible_architecture"
     case downloaded, task
     case controlType = "control_type"
@@ -246,6 +262,7 @@ struct EmbeddingAsset: Codable, Sendable {
   let type: AssetType
   let id: String
   let name: String
+  let source: AssetSource
   let compatibleArchitecture: Architecture
   let downloaded: Bool
   let keyword: String                          // trigger word
@@ -253,7 +270,7 @@ struct EmbeddingAsset: Codable, Sendable {
   let deprecated: Bool
 
   enum CodingKeys: String, CodingKey {
-    case type, id, name
+    case type, id, name, source
     case compatibleArchitecture = "compatible_architecture"
     case downloaded, keyword, length, deprecated
   }
@@ -399,13 +416,14 @@ struct AssetListResponse: Codable, Sendable {
 // MARK: - Specification → typed variant constructors
 
 extension BaseModelAsset {
-  init(_ spec: ModelZoo.Specification) {
+  init(_ spec: ModelZoo.Specification, source: AssetSource) {
     let scale = Int(spec.defaultScale) * 64
     let hires = spec.hiresFixScale.map { Int($0) * 64 }
     let arch = Architecture(rawValue: spec.version.rawValue) ?? .v1
     self.type = .baseModel
     self.id = spec.file
     self.name = spec.name
+    self.source = source
     self.architecture = arch
     self.domain = arch.domain
     self.downloaded = ModelZoo.isModelDownloaded(spec)
@@ -432,7 +450,8 @@ extension BaseModelAsset {
   /// threading the resolver through every Spec init site.
   func withInstallSize(_ size: Int64?) -> BaseModelAsset {
     BaseModelAsset(
-      type: type, id: id, name: name, architecture: architecture,
+      type: type, id: id, name: name, source: source,
+      architecture: architecture,
       domain: domain, downloaded: downloaded,
       recommendedResolution: recommendedResolution,
       hiresFixRecommendedResolution: hiresFixRecommendedResolution,
@@ -448,7 +467,7 @@ extension BaseModelAsset {
 }
 
 extension LoRAAsset {
-  init(_ spec: LoRAZoo.Specification) {
+  init(_ spec: LoRAZoo.Specification, source: AssetSource) {
     let arch = Architecture(rawValue: spec.version.rawValue) ?? .v1
     let weight = spec.weight.map {
       WeightRange(lower: $0.lowerBound, upper: $0.upperBound, recommended: $0.value)
@@ -456,6 +475,7 @@ extension LoRAAsset {
     self.type = .lora
     self.id = spec.file
     self.name = spec.name
+    self.source = source
     self.compatibleArchitecture = arch
     self.domain = arch.domain
     self.downloaded = LoRAZoo.isModelDownloaded(spec)
@@ -469,10 +489,11 @@ extension LoRAAsset {
 }
 
 extension ControlNetAsset {
-  init(_ spec: ControlNetZoo.Specification) {
+  init(_ spec: ControlNetZoo.Specification, source: AssetSource) {
     self.type = .controlnet
     self.id = spec.file
     self.name = spec.name
+    self.source = source
     self.compatibleArchitecture = Architecture(rawValue: spec.version.rawValue) ?? .v1
     self.downloaded = ControlNetZoo.isModelDownloaded(spec)
     self.task = spec.modifier.flatMap { ControlNetTask(rawValue: $0.rawValue) }
@@ -482,10 +503,11 @@ extension ControlNetAsset {
 }
 
 extension EmbeddingAsset {
-  init(_ spec: TextualInversionZoo.Specification) {
+  init(_ spec: TextualInversionZoo.Specification, source: AssetSource) {
     self.type = .embedding
     self.id = spec.file
     self.name = spec.name
+    self.source = source
     self.compatibleArchitecture = Architecture(rawValue: spec.version.rawValue) ?? .v1
     self.downloaded = TextualInversionZoo.isModelDownloaded(spec.file)
     self.keyword = spec.keyword

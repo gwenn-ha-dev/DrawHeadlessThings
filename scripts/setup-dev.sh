@@ -12,7 +12,10 @@
 #      method so we don't have to roundtrip through a temp file to encode;
 #   3. adds the `_MediaGenerationKit.BaseModelImporter` facade — a curated
 #      wrapper over `ModelOp.ModelImporter` used to import local base-model
-#      checkpoints (mirrors the existing LoRAImporter facade).
+#      checkpoints (mirrors the existing LoRAImporter facade);
+#   4. exposes `Downloader` as a library product (community-catalog fetch +
+#      file-size metadata) and makes the four `communityOnDisk` catalog
+#      arrays public so the server can label community-origin assets.
 #
 # The patch lives only in the local clone — it is never pushed upstream.
 # When the pinned SHA is bumped, re-run this script; if Package.swift has

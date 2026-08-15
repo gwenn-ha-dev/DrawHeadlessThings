@@ -1261,7 +1261,10 @@ enum MCPToolCatalog {
         + "upscalers, face-restoration). Filterable by type, architecture, "
         + "domain (image vs video), and ControlNet task. Use this to "
         + "discover available `model` ids before `compose` / `edit` / "
-        + "`restore` / `pipeline`.",
+        + "`restore` / `pipeline`. With downloaded_only=false the listing "
+        + "also includes installable suggestions from the official and "
+        + "community catalogs — each entry carries a `source` field "
+        + "(official / community / custom).",
       "inputSchema": [
         "type": "object",
         "properties": [
