@@ -16,7 +16,7 @@ let package = Package(
     // _MediaGenerationKit.BaseModelImporter facade (local base-model import).
     // See scripts/setup-dev.sh and scripts/dtc-products.patch.
     // The clone lives in-tree (gitignored) at .sdk-src/draw-things-community
-    // at SHA 9f3f04b7a0729a50384caf58179bed592044d64d.
+    // at SHA bc3970cd24568d71e1d6a1543658fae54c136307.
     .package(path: ".sdk-src/draw-things-community"),
     // s4nnc, pinned to the exact revision draw-things-community resolves, so
     // SwiftPM unifies the two on one version. We depend on it directly only
@@ -25,7 +25,7 @@ let package = Package(
     // `@_exported import NNC` inside the engine source).
     .package(
       url: "https://github.com/liuliu/s4nnc.git",
-      revision: "594050126b5cee0dd18488dc05a57947df912878"),
+      revision: "349a4d9fcdda282307fc12543f4e615beef5d335"),
     .package(
       url: "https://github.com/hummingbird-project/hummingbird.git",
       from: "2.23.0"

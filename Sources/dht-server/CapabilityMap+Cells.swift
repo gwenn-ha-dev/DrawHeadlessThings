@@ -892,6 +892,72 @@ let capabilityCells: [CapabilityMap.Key: [Operation: ContractTemplate]] = [
       ]),
   ],
 
+  // HiDream-O1 — 2026 "omni" successor of HiDream-I1. Branches apart from
+  // I1 in the SDK (dedicated HiDreamO1TextFixed encoder, padded text length
+  // 0 vs 128), hence its own class. Catalog config: 1024×1024, 28 steps,
+  // cfg 1 ("HiDream O1 [dev]" in MediaGenerationKit configs.json).
+  .init(behaviorClass: .hidreamO1, modifier: .none): [
+    .txt2img: ContractTemplate(
+      accepted: merging(
+        FieldBundle.universalImageScalars,
+        FieldBundle.commonImageSubObjects,
+        modernRfExtraSubObjects),
+      silentDrops: modernRfNoClipImageDrops,
+      notes: [
+        "HiDream-O1. Flow matching; dedicated HiDream-O1 LLM text encoder (no CLIP, unlike HiDream-I1's multi-encoder mix).",
+      ]),
+    .img2img: ContractTemplate(
+      accepted: merging(
+        FieldBundle.universalImageScalars,
+        FieldBundle.commonImageSubObjects,
+        modernRfExtraSubObjects,
+        img2imgExtras),
+      silentDrops: modernRfNoClipImageDrops,
+      notes: ["HiDream-O1 img2img renoise."]),
+  ],
+
+  // Ideogram 4
+  .init(behaviorClass: .ideogram4, modifier: .none): [
+    .txt2img: ContractTemplate(
+      accepted: merging(
+        FieldBundle.universalImageScalars,
+        FieldBundle.commonImageSubObjects,
+        modernRfExtraSubObjects),
+      silentDrops: modernRfNoClipImageDrops,
+      notes: [
+        "Ideogram 4. Flow matching; Qwen3 text encoder (no CLIP). LoRA and tiled diffusion supported engine-side.",
+      ]),
+    .img2img: ContractTemplate(
+      accepted: merging(
+        FieldBundle.universalImageScalars,
+        FieldBundle.commonImageSubObjects,
+        modernRfExtraSubObjects,
+        img2imgExtras),
+      silentDrops: modernRfNoClipImageDrops,
+      notes: ["Ideogram 4 img2img renoise."]),
+  ],
+
+  // Krea 2 (raw + turbo)
+  .init(behaviorClass: .krea2, modifier: .none): [
+    .txt2img: ContractTemplate(
+      accepted: merging(
+        FieldBundle.universalImageScalars,
+        FieldBundle.commonImageSubObjects,
+        modernRfExtraSubObjects),
+      silentDrops: modernRfNoClipImageDrops,
+      notes: [
+        "Krea 2 (raw / turbo). Flow matching; Qwen3 text encoder + Krea text-fusion adapter (no CLIP). LoRA and tiled diffusion supported engine-side.",
+      ]),
+    .img2img: ContractTemplate(
+      accepted: merging(
+        FieldBundle.universalImageScalars,
+        FieldBundle.commonImageSubObjects,
+        modernRfExtraSubObjects,
+        img2imgExtras),
+      silentDrops: modernRfNoClipImageDrops,
+      notes: ["Krea 2 img2img renoise."]),
+  ],
+
   // =====================================================================
   // SeedVR2 — image super-resolution / restoration (new op)
   // =====================================================================
@@ -1096,6 +1162,28 @@ let capabilityCells: [CapabilityMap.Key: [Operation: ContractTemplate]] = [
       ],
       notes: [
         "LTX-2 Kontext variant (modifier='kontext'). conditioning_image is encoded as the first-frame reference using the kontext path; the rest of the video is generated from prompt. User-facing op is img2vid; the kontext modifier is engine-side plumbing.",
+      ]),
+  ],
+
+  // LongCat Video Avatar 1.5 — audio-driven avatar i2v. The engine's audio
+  // conditioning path (LocalImageGenerator.swift:1083) is not exposed by the
+  // DHT API in v0; without audio the model runs as a plain image-conditioned
+  // video generation.
+  .init(behaviorClass: .longcatAvatar, modifier: .none): [
+    .img2vid: ContractTemplate(
+      accepted: merging(
+        FieldBundle.universalImageScalars,
+        FieldBundle.videoExtras,
+        merging(["loras": F.loras, "upscaler": F.upscaler], img2vidExtras),
+        ["flow_match": F.flowMatch]),
+      silentDrops: videoDrops + [
+        Drops.clipSkipOnNonClip,
+        SilentDrop(field: "controlnets", reason: "Video archs don't engage ControlNet"),
+        SilentDrop(field: "reference_image", reason: "Use conditioning_image for the avatar frame"),
+        SilentDrop(field: "depth_image", reason: "Not used"),
+      ],
+      notes: [
+        "LongCat Video Avatar 1.5 img2vid. conditioning_image is the avatar frame. The upstream audio-conditioning input (talking-head driving audio) is NOT exposed by the DHT API in v0 — generation runs without audio.",
       ]),
   ],
 ]

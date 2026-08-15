@@ -155,6 +155,10 @@ components:
         - ltx2.3
         - seedvr2_3b
         - seedvr2_7b
+        - hidream_o1
+        - ideogram_4
+        - krea_2
+        - longcat_video_avatar_v1.5
 
     Sampler:
       type: string
@@ -1662,11 +1666,15 @@ components:
         - ernieImage
         - cosmos2
         - seedvr2
+        - hidreamO1
+        - ideogram4
+        - krea2
         - svdI2v
         - hunyuanVideo
         - wan21
         - wan22
         - ltx2
+        - longcatAvatar
 
     Modifier:
       type: string

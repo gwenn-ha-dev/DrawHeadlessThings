@@ -44,17 +44,21 @@ enum Operation: String, Codable, Sendable, CaseIterable {
 
 /// Quotient over `Architecture` (SDK `ModelVersion`) that groups variants
 /// branching alike in the SDK switches. The capability map is keyed on
-/// `(BehaviorClass, SamplerModifier)` — 20 image+video classes vs 30 raw
+/// `(BehaviorClass, SamplerModifier)` — 24 image+video classes vs 34 raw
 /// architectures. Adding a new `ModelVersion` upstream surfaces as a
 /// compile-time error on `Architecture.behaviorClass`, not as silent drift.
 enum BehaviorClass: String, Codable, Sendable, CaseIterable {
-  // Image (15)
+  // Image (18)
   case sd1x, kandinsky21, sdxl, stableCascade, sd3
   case pixart, auraflow, flux1, flux2, hidream
   case qwenImage, zImage, ernieImage, cosmos2, seedvr2
+  // hiDream-O1 branches apart from hiDream-I1 in the SDK switches
+  // (e.g. padded text-encoding length), hence its own class.
+  case hidreamO1, ideogram4, krea2
 
-  // Video (5)
+  // Video (6)
   case svdI2v, hunyuanVideo, wan21, wan22, ltx2
+  case longcatAvatar
 }
 
 extension Architecture {
@@ -77,6 +81,10 @@ extension Architecture {
     case .flux1: return .flux1
     case .flux2, .flux2_9b, .flux2_4b: return .flux2
     case .hiDreamI1: return .hidream
+    case .hiDreamO1: return .hidreamO1
+    case .ideogram4: return .ideogram4
+    case .krea2: return .krea2
+    case .longcatVideoAvatar1_5: return .longcatAvatar
     case .qwenImage: return .qwenImage
     case .zImage: return .zImage
     case .ernieImage: return .ernieImage

@@ -1,9 +1,9 @@
 diff --git a/Libraries/MediaGenerationKit/Sources/BaseModelImporter.swift b/Libraries/MediaGenerationKit/Sources/BaseModelImporter.swift
 new file mode 100644
-index 0000000..32135e7
+index 0000000..bf50c54
 --- /dev/null
 +++ b/Libraries/MediaGenerationKit/Sources/BaseModelImporter.swift
-@@ -0,0 +1,202 @@
+@@ -0,0 +1,206 @@
 +@preconcurrency import Diffusion
 +import Foundation
 +import ModelOp
@@ -176,7 +176,7 @@ index 0000000..32135e7
 +      conditioning: nil,
 +      noiseDiscretization: nil,
 +      upcastAttention: false,
-+      finetuneScale: Self.defaultImportScale(for: version)
++      finetuneScale: Self.defaultImportScale(for: version, artifactFileName: file.lastPathComponent)
 +    )
 +
 +    // Files the spec points at that the import did not itself produce — the
@@ -195,10 +195,14 @@ index 0000000..32135e7
 +
 +  /// Default hires-fix / finetune scale per architecture. Mirrors the
 +  /// `defaultImportScale` table in the upstream DrawThingsCLI importer.
-+  private static func defaultImportScale(for version: ModelVersion) -> UInt16 {
++  private static func defaultImportScale(for version: ModelVersion, artifactFileName: String)
++    -> UInt16
++  {
 +    switch version {
-+    case .hunyuanVideo, .wan21_14b, .wan22_5b:
++    case .hunyuanVideo, .wan21_14b, .wan22_5b, .longcatVideoAvatar1_5:
 +      return 12
++    case .pixart:
++      return artifactFileName.contains("512") ? 8 : 16
 +    case .v1, .v2, .kandinsky21, .svdI2v, .seedvr2_3b, .seedvr2_7b, .wan21_1_3b:
 +      return 8
 +    default:
@@ -207,10 +211,10 @@ index 0000000..32135e7
 +  }
 +}
 diff --git a/Libraries/MediaGenerationKit/Sources/MediaGenerationPipeline.swift b/Libraries/MediaGenerationKit/Sources/MediaGenerationPipeline.swift
-index 8c74350..33397d7 100644
+index 1ceabf7..a8dde88 100644
 --- a/Libraries/MediaGenerationKit/Sources/MediaGenerationPipeline.swift
 +++ b/Libraries/MediaGenerationKit/Sources/MediaGenerationPipeline.swift
-@@ -634,6 +634,13 @@ public struct MediaGenerationPipeline: Sendable {
+@@ -659,6 +659,13 @@ public struct MediaGenerationPipeline: Sendable {
        let data = try MediaGenerationImageCodec.encode(tensor, type: type)
        try data.write(to: url, options: options)
      }
@@ -225,7 +229,7 @@ index 8c74350..33397d7 100644
  
    internal final class Storage: @unchecked Sendable {
 diff --git a/Package.swift b/Package.swift
-index 6ae4c90..08f2d88 100644
+index 45140b8..4fd1a61 100644
 --- a/Package.swift
 +++ b/Package.swift
 @@ -9,6 +9,10 @@ let package = Package(

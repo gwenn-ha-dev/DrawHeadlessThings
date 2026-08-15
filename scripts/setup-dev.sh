@@ -20,7 +20,7 @@
 
 set -euo pipefail
 
-PINNED_SHA="9f3f04b7a0729a50384caf58179bed592044d64d"
+PINNED_SHA="bc3970cd24568d71e1d6a1543658fae54c136307"
 REPO_URL="https://github.com/drawthingsai/draw-things-community.git"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

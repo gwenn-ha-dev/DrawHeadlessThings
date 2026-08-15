@@ -5,6 +5,23 @@ All notable changes to this project are documented here. The format is based on
 to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches 1.0. Pre-1.0, minor versions may include breaking changes.
 
+## [Unreleased]
+
+### Changed
+
+- **Engine bump: draw-things-community `9f3f04b` → `bc3970c`** (2026-05-18 →
+  2026-08-14, 133 commits). Brings four new architectures — **Krea 2**
+  (raw/turbo, LoRA + tiled diffusion), **Ideogram 4** (LoRA + tiled
+  diffusion), **HiDream-O1**, and **LongCat Video Avatar 1.5** (audio-driven
+  avatar i2v; audio input not exposed by the API in v0) — plus upstream fixes
+  (aspect-ratio loss, TCD-trailing cfg, Krea text-encoder with cfg disabled)
+  and Xcode 26.6/Swift 6.3.3 toolchain compatibility. The `Architecture` /
+  `BehaviorClass` mirrors, the capability map, the OpenAPI enums and the
+  batch-size-cap table are extended accordingly; s4nnc is re-pinned to the
+  revision the new engine resolves (`349a4d9`). The `dtc-products.patch`
+  `BaseModelImporter` import-scale table is realigned with upstream
+  (LongCat → 12, PixArt 512-variant → 8).
+
 ## [0.3.9]
 
 ### Changed

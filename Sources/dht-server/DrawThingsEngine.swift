@@ -8,7 +8,7 @@ import _MediaGenerationKit
 /// Pinned engine commit. Bumped when we re-resolve the `draw-things-community`
 /// dependency in `Package.swift` / `Package.resolved`. Surfaced via
 /// `/v1/info` and on every generation response's `RunMetadata`.
-let dhtEngineVersion = "draw-things-community@9f3f04b"
+let dhtEngineVersion = "draw-things-community@bc3970c"
 
 /// Per-step progress callback shared by every generation method. Called with
 /// `(step, totalSteps, previewPNG)` for each diffusion step the engine emits
@@ -86,7 +86,7 @@ extension GenerationEngine {
 
 /// Model architectures where the engine silently forces `batchSize = 1`
 /// regardless of the user-requested batch size. Source of truth:
-/// `LocalImageGenerator.swift:3789, 5141, 6444, 7343` — identical guard in
+/// `LocalImageGenerator.swift:3975, 5402, 6731, 7639` — identical guard in
 /// all four generate paths: `isVideoModel(version) || .seedvr2_3b ||
 /// .seedvr2_7b`. Z-Image / Flux / SD3 / other Flow-Matching archs do NOT
 /// trigger the cap, contrary to earlier folklore in `engine-quirks.md`.
@@ -96,6 +96,7 @@ private let batchSizeCappedVersions: Set<String> = [
   "hunyuan_video",
   "wan_v2.1_1.3b", "wan_v2.1_14b", "wan_v2.2_5b",
   "ltx2", "ltx2.3",
+  "longcat_video_avatar_v1.5",
   // Plus the two seedvr2 variants
   "seedvr2_3b", "seedvr2_7b",
 ]
