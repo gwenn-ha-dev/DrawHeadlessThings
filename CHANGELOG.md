@@ -5,7 +5,7 @@ All notable changes to this project are documented here. The format is based on
 to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches 1.0. Pre-1.0, minor versions may include breaking changes.
 
-## [Unreleased]
+## [0.4.0]
 
 ### Added
 
@@ -36,6 +36,15 @@ reaches 1.0. Pre-1.0, minor versions may include breaking changes.
   revision the new engine resolves (`349a4d9`). The `dtc-products.patch`
   `BaseModelImporter` import-scale table is realigned with upstream
   (LongCat → 12, PixArt 512-variant → 8).
+
+## [0.3.10]
+
+### Changed
+
+- **Generate panel — Save… defaults to JPEG (quality 0.9)**, smaller and easy
+  to share; PNG stays selectable for a lossless copy. The server still returns
+  lossless PNG bytes — JPEG is a one-shot re-encode at save time, and choosing
+  `.png` writes the raw bytes untouched.
 
 ## [0.3.9]
 
