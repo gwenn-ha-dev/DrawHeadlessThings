@@ -15,7 +15,12 @@
 #      checkpoints (mirrors the existing LoRAImporter facade);
 #   4. exposes `Downloader` as a library product (community-catalog fetch +
 #      file-size metadata) and makes the four `communityOnDisk` catalog
-#      arrays public so the server can label community-origin assets.
+#      arrays public so the server can label community-origin assets;
+#   5. re-pins s4nnc → 5a84c2e / ccv → 0e61707 in the clone's Package.swift.
+#      The revisions the engine pins (s4nnc 349a4d9 → ccv 9008b47) ship four
+#      Metal-kernel commits that break Z-Image Turbo denoising here (blue
+#      square blobs on every image); 5a84c2e is the same s4nnc source one
+#      deps-pin earlier. Revisit at the next engine bump.
 #
 # The patch lives only in the local clone — it is never pushed upstream.
 # When the pinned SHA is bumped, re-run this script; if Package.swift has

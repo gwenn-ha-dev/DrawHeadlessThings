@@ -289,10 +289,10 @@ index 1ceabf7..a8dde88 100644
  
    internal final class Storage: @unchecked Sendable {
 diff --git a/Package.swift b/Package.swift
-index 45140b8..9fe3696 100644
+index 45140b8..6310203 100644
 --- a/Package.swift
 +++ b/Package.swift
-@@ -9,6 +9,14 @@ let package = Package(
+@@ -9,14 +9,22 @@ let package = Package(
      .executable(name: "gRPCServerCLI", targets: ["gRPCServerCLI"]),
      .executable(name: "draw-things-cli", targets: ["DrawThingsCLI"]),
      .library(name: "_MediaGenerationKit", targets: ["_MediaGenerationKit"]),
@@ -307,3 +307,13 @@ index 45140b8..9fe3696 100644
    ],
    dependencies: [
      .package(
+-      url: "https://github.com/liuliu/ccv.git", revision: "9008b4785fc0bb9a05212c9aff8dc2f6abfbe814"
++      url: "https://github.com/liuliu/ccv.git", revision: "0e61707ff9f365dee2d51ff445ca21dc23255473"
+     ),
+     .package(
+       url: "https://github.com/liuliu/s4nnc.git",
+-      revision: "349a4d9fcdda282307fc12543f4e615beef5d335"),
++      revision: "5a84c2e98e44a569c9ab97bb1b281adfd171122d"),
+     .package(
+       url: "https://github.com/liuliu/dflat.git",
+       revision: "73925e51e4f44add842177a229f9990cb13711ff"),

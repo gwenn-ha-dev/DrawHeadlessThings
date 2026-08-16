@@ -5,6 +5,22 @@ All notable changes to this project are documented here. The format is based on
 to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches 1.0. Pre-1.0, minor versions may include breaking changes.
 
+## [0.4.1]
+
+### Fixed
+
+- **Z-Image Turbo produced garbage images (dense blue/black square blobs) on
+  every generation** since the 0.4.0 engine bump. Root cause: the bump pulled
+  ccv `9008b47`, whose four last kernel commits (`Fix RMSNorm sync issue`,
+  `Move query offset to runtime parameter`, `IndexSelect kernel`,
+  `threadgroupMemory out-of-bounds fix`) break Z-Image's denoising on this
+  configuration — 0.3.10 and an A/B rebuild at seed 42 confirm the bisect.
+  s4nnc is re-pinned to `5a84c2e` (identical source, one deps-pin behind),
+  which pulls the last-known-good ccv `0e61707`; the `dtc-products.patch` now
+  also re-pins both inside the engine clone's `Package.swift` so SwiftPM
+  resolution stays consistent. Note: upstream's own Bazel build ships the
+  affected ccv, so the pin should be revisited at the next engine bump.
+
 ## [0.4.0]
 
 ### Added
