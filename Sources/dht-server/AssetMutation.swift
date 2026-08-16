@@ -269,6 +269,19 @@ extension AssetManager {
     do {
       let resolved = try await MediaGenerationEnvironment.default.ensure(
         model, stateHandler: onState)
+      // Community-catalog models: ensure() downloads the files but registers
+      // no Specification, so generation lookup (ModelZoo.specificationForModel)
+      // would still miss the model. Mirror the GUI app: persist the catalog
+      // spec (custom.json + in-memory mappings). Official models already
+      // resolve and skip this; AssetManager still labels the asset
+      // `source: community` because catalog membership wins over custom.json.
+      if ModelZoo.specificationForModel(resolved.file) == nil,
+        let spec = ModelZoo.communityOnDisk.first(where: { $0.file == resolved.file })
+      {
+        await MainActor.run {
+          ModelZoo.appendCustomSpecification(spec)
+        }
+      }
       guard let asset = await self.get(id: resolved.file) else {
         throw AssetMutationError.engineMisconfigured(
           "post-install lookup failed for '\(resolved.file)'")

@@ -69,6 +69,23 @@ struct DHTServer {
       TextualInversionZoo.requestNetworkPayload()
     }
 
+    // Catch-up registration for community base models already on disk.
+    // ensure() downloads a community model's files but registers no
+    // Specification, so generation lookup (ModelZoo.specificationForModel)
+    // misses the model even though /v1/assets lists it as downloaded.
+    // Install now registers at install time (see installFromCatalog); this
+    // sweep repairs models installed before that fix, from the cached
+    // catalog. Full isModelDownloaded(spec) — main file + companions — so a
+    // half-downloaded model is never registered as generable.
+    await MainActor.run {
+      for spec in ModelZoo.communityOnDisk
+      where ModelZoo.specificationForModel(spec.file) == nil
+        && ModelZoo.isModelDownloaded(spec)
+      {
+        ModelZoo.appendCustomSpecification(spec)
+      }
+    }
+
     var logger = Logger(label: "dht-server")
     logger.logLevel = config.logLevel
 

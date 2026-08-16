@@ -9,6 +9,17 @@ reaches 1.0. Pre-1.0, minor versions may include breaking changes.
 
 ### Fixed
 
+- **Community-catalog models were listed but not generable.** Installing a
+  base model from the community catalog downloaded its files but never
+  registered the model's `Specification`, so `/v1/assets` reported it
+  `downloaded: true` while `/v1/compose` answered `MODEL_NOT_INSTALLED`
+  (generation lookup goes through `ModelZoo.specificationForModel`, which
+  never consults the community catalog). Catalog installs now persist the
+  community spec via `ModelZoo.appendCustomSpecification` — the mechanism
+  the Draw Things GUI uses — and startup sweeps the cached catalog to
+  register community models already fully on disk (main file + companions),
+  repairing pre-fix installs. Assets keep `source: community`.
+
 - **Z-Image Turbo produced garbage images (dense blue/black square blobs) on
   every generation** since the 0.4.0 engine bump. Root cause: the bump pulled
   ccv `9008b47`, whose four last kernel commits (`Fix RMSNorm sync issue`,
