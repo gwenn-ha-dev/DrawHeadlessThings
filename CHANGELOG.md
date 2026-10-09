@@ -5,6 +5,19 @@ All notable changes to this project are documented here. The format is based on
 to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches 1.0. Pre-1.0, minor versions may include breaking changes.
 
+## [Unreleased]
+
+### Changed
+
+- **The app and the DMG are signed with a Developer ID and notarized.**
+  `scripts/notarize.sh` runs `scripts/make-app.sh`, re-signs the app inside
+  out with the hardened runtime, then notarizes and staples the app and the
+  DMG: DHTServer.app opens with a double click, with no Gatekeeper bypass.
+  It also maps the checkout to `.` at compile time, so the binaries carry no
+  build path. `make-app.sh` alone still signs ad hoc, for local use.
+- README: the hero image is now a real `dht-server` output (the quick-start
+  prompt), and the install section drops the Gatekeeper workaround.
+
 ## [0.4.1]
 
 ### Fixed

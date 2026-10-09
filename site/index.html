@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DrawHeadlessThings — the Draw Things engine as an HTTP and MCP server</title>
+<meta name="description" content="A headless macOS server around the draw-things-community image-generation engine: a REST API and an MCP endpoint in one process, on Apple Silicon.">
+<link rel="canonical" href="https://gwenn-ha-dev.github.io/DrawHeadlessThings/">
+<link rel="icon" href="images/icon.png" type="image/png">
+<meta property="og:type" content="website">
+<meta property="og:title" content="DrawHeadlessThings — the Draw Things engine as an HTTP and MCP server">
+<meta property="og:description" content="A headless macOS server around the draw-things-community image-generation engine: a REST API and an MCP endpoint in one process, on Apple Silicon.">
+<meta property="og:url" content="https://gwenn-ha-dev.github.io/DrawHeadlessThings/">
+<meta property="og:image" content="https://gwenn-ha-dev.github.io/DrawHeadlessThings/images/social-preview.jpg">
+<meta property="og:image:width" content="1280">
+<meta property="og:image:height" content="640">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://gwenn-ha-dev.github.io/DrawHeadlessThings/images/social-preview.jpg">
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"SoftwareApplication","name":"DrawHeadlessThings",
+ "operatingSystem":"macOS 14 or later","applicationCategory":"DeveloperApplication",
+ "description":"A headless macOS server around the draw-things-community image-generation engine: a REST API and an MCP endpoint in one process, on Apple Silicon.",
+ "offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"license":"https://www.gnu.org/licenses/gpl-3.0.html",
+ "downloadUrl":"https://github.com/gwenn-ha-dev/DrawHeadlessThings/releases/latest",
+ "codeRepository":"https://github.com/gwenn-ha-dev/DrawHeadlessThings","image":"https://gwenn-ha-dev.github.io/DrawHeadlessThings/images/misty-forest.png"}
+</script>
+<style>
+  :root {
+    --bg: #ffffff; --panel: #f4f5f7; --line: #e2e4e8; --text: #16181d; --muted: #5d6170;
+    --accent: #2f7d5b; --accent-text: #fff; --link: #1f5fbf;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #111214; --panel: #1b1c1f; --line: #2c2d31; --text: #ececee; --muted: #a2a3a8; --link: #8ab4ff; }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 17px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif; }
+  a { color: var(--link); }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 16px; }
+  header { padding: 72px 0 40px; text-align: center; }
+  .icon { width: 96px; height: 96px; }
+  h1 { font-size: clamp(34px, 6vw, 56px); margin: 12px 0 4px; letter-spacing: -0.02em; }
+  .lead { font-size: clamp(19px, 2.6vw, 23px); max-width: 760px; margin: 0 auto 28px; }
+  .cta { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+  .btn { display: inline-block; padding: 12px 22px; border-radius: 10px; text-decoration: none;
+         font-weight: 600; border: 1px solid var(--line); color: var(--text); background: var(--panel); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+  .req { color: var(--muted); font-size: 14px; margin-top: 12px; }
+  figure { margin: 0; }
+  .shot img, .hero img { max-width: 100%; height: auto; display: block; margin: 0 auto; border-radius: 12px; }
+  figcaption { color: var(--muted); font-size: 14px; margin-top: 8px; text-align: center; }
+  section { padding: 48px 0; border-top: 1px solid var(--line); }
+  h2 { font-size: 28px; margin: 0 0 20px; letter-spacing: -0.01em; }
+  .grid3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; }
+  .card h3 { margin: 0 0 6px; font-size: 18px; }
+  .card p { margin: 0; color: var(--muted); font-size: 15.5px; }
+  .split { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; align-items: center; }
+  .split.rev .text { order: 2; }
+  @media (max-width: 760px) { .split { grid-template-columns: 1fr; } .split.rev .text { order: 0; } }
+  code { font: 14.5px ui-monospace, "SF Mono", Menlo, monospace; background: var(--panel);
+         padding: 2px 6px; border-radius: 6px; border: 1px solid var(--line); }
+  pre { font: 14px/1.5 ui-monospace, "SF Mono", Menlo, monospace; background: var(--panel);
+        border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; overflow-x: auto; margin: 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 15.5px; }
+  td { border-top: 1px solid var(--line); padding: 8px 10px 8px 0; vertical-align: top; }
+  td:first-child { white-space: nowrap; }
+  .scroll { overflow-x: auto; }
+  footer { padding: 36px 0 56px; color: var(--muted); font-size: 14px; text-align: center;
+           border-top: 1px solid var(--line); }
+</style>
+</head>
+<body>
+<header class="wrap">
+  <img class="icon" src="images/icon.png" width="96" height="96" alt="">
+  <h1>DrawHeadlessThings</h1>
+  <p class="lead">The <a href="https://github.com/drawthingsai/draw-things-community">draw-things-community</a> image-generation engine, without the app around it: one process that serves a REST API and an MCP endpoint, so scripts and AI agents can generate, edit and chain images.</p>
+  <div class="cta">
+    <a class="btn primary" href="https://github.com/gwenn-ha-dev/DrawHeadlessThings/releases/latest">Download for macOS</a>
+    <a class="btn" href="https://github.com/gwenn-ha-dev/DrawHeadlessThings">Source on GitHub</a>
+  </div>
+  <p class="req">Free and open source (GPL-3.0-or-later) · macOS 14 or later, Apple Silicon · signed and notarized</p>
+</header>
+
+<div class="wrap hero">
+  <figure>
+    <img src="images/misty-forest.png" width="1024" height="1024" style="max-width:min(100%,640px)" alt="A misty forest at dawn: tall trunks and ferns along an earthen path, low sun diffused through the fog, a lone walker far down the path">
+    <figcaption>Generated by dht-server 0.4.1 from the request below — Z Image Turbo 1.0 (6-bit), 1024 × 1024, 8 steps, seed 2617135200.</figcaption>
+  </figure>
+</div>
+
+<section class="wrap" style="margin-top:48px">
+  <h2>Why DrawHeadlessThings</h2>
+  <div class="grid3">
+    <div class="card"><h3>Three verbs over HTTP</h3><p><code>compose</code>, <code>edit</code> and <code>restore</code>, described by an OpenAPI 3.1 spec, with Swagger UI at <code>/docs</code>.</p></div>
+    <div class="card"><h3>MCP for AI agents</h3><p>The same surface over the Model Context Protocol (Streamable HTTP), one tool per route, in the same process.</p></div>
+    <div class="card"><h3>Reproducible</h3><p>No sessions, no gallery. Every response carries <code>X-DHT-Recipe</code>, the canonical recipe that produced the bytes.</p></div>
+    <div class="card"><h3>Dry-run first</h3><p><code>/v1/resolve/{verb}</code> reports defaults, warnings and a compute estimate without touching the GPU.</p></div>
+    <div class="card"><h3>Pipelines</h3><p><code>/v1/pipeline</code> chains verbs: a step's output feeds a later step through a <code>$name</code> reference.</p></div>
+    <div class="card"><h3>Models on demand</h3><p>The official and community catalogs are listed, and base models install with <code>POST /v1/assets/install</code>.</p></div>
+  </div>
+</section>
+
+<section class="wrap">
+  <h2>One request</h2>
+  <p>With the server on <code>localhost:7766</code>:</p>
+  <pre>curl -X POST http://localhost:7766/v1/compose \
+  -H 'content-type: application/json' \
+  -d '{
+        "model": "z_image_turbo_1.0_q8p.ckpt",
+        "prompt": "a misty forest at dawn, cinematic",
+        "params": { "width": 1024, "height": 1024, "steps": 8 }
+      }' \
+  | jq -r '.images[0]' | base64 -D &gt; forest.png</pre>
+  <p>The JSON also carries the seed, the generation time and the defaults the server applied. The same body posted to <code>/v1/resolve/compose</code> is a dry run.</p>
+</section>
+
+<section class="wrap">
+  <h2>Safe by default</h2>
+  <div class="scroll"><table>
+    <tr><td><code>default</code></td><td>Loopback only, no token: a trusted local machine.</td></tr>
+    <tr><td><code>--bind public</code></td><td>Serves the LAN and requires <code>--token</code>. No TLS: put a reverse proxy in front if you need one.</td></tr>
+    <tr><td><code>--read-only</code></td><td>Refuses every asset install or deletion.</td></tr>
+    <tr><td><code>--max-active-runs N</code></td><td>Caps concurrent generations.</td></tr>
+  </table></div>
+</section>
+
+<section class="wrap" style="text-align:center">
+  <h2>Get it</h2>
+  <div class="cta">
+    <a class="btn primary" href="https://github.com/gwenn-ha-dev/DrawHeadlessThings/releases/latest">Download the .dmg</a>
+    <a class="btn" href="https://github.com/gwenn-ha-dev/DrawHeadlessThings#readme">Read the README</a>
+  </div>
+  <p class="req">Open the .dmg, drag DHTServer onto Applications. It is signed with a Developer ID and notarized by Apple: it opens with a double click. DHTServer is a menu-bar agent that runs the server; point it at your models folder in Settings. Headless? Run <code>dht-server</code> from the app bundle, or build it from source.</p>
+</section>
+
+<section class="wrap">
+  <h2>Credits</h2>
+  <p>The diffusion engine, the Metal kernels and the model catalog are the work of Liu Liu and the Draw Things community, in <a href="https://github.com/drawthingsai/draw-things-community">draw-things-community</a>. DrawHeadlessThings is a thin server on top, under the same GPL-3.0 licence.</p>
+</section>
+
+<footer class="wrap">
+  DrawHeadlessThings · GPL-3.0-or-later · <a href="https://github.com/gwenn-ha-dev/DrawHeadlessThings">github.com/gwenn-ha-dev/DrawHeadlessThings</a>
+</footer>
+</body>
+</html>
