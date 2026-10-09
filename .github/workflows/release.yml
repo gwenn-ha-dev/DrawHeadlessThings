@@ -1,6 +1,12 @@
 name: Release
 
-# Tag a release as `vX.Y.Z` to trigger this workflow. The job builds
+# Run by hand only (Actions → Release → Run workflow, from the tag: the job
+# reads the version from GITHUB_REF). Releases are built,
+# signed with a Developer ID and notarized locally by scripts/notarize.sh; a
+# tag push used to start this job too, which attached an ad-hoc DMG next to —
+# or instead of — the notarized one.
+#
+# The job builds
 # DHTServer.app (the menu-bar agent, with the dht-server REST + MCP engine
 # embedded inside it), packages it into a DMG via scripts/make-app.sh, and
 # attaches the DMG to the GitHub Release that GitHub auto-creates for the tag.
@@ -12,9 +18,7 @@ name: Release
 # Apple Silicon only: the wrapped engine (draw-things-community) is Metal-based.
 
 on:
-  push:
-    tags:
-      - 'v*.*.*'
+  workflow_dispatch:
 
 permissions:
   contents: write
