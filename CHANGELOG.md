@@ -7,6 +7,8 @@ reaches 1.0. Pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+## [0.4.2] — 2026-10-10
+
 ### Changed
 
 - **The app and the DMG are signed with a Developer ID and notarized.**
@@ -17,6 +19,11 @@ reaches 1.0. Pre-1.0, minor versions may include breaking changes.
   build path. `make-app.sh` alone still signs ad hoc, for local use.
 - README: the hero image is now a real `dht-server` output (the quick-start
   prompt), and the install section drops the Gatekeeper workaround.
+
+### Fixed
+
+- `openapi.yaml` named the install source `AssetSource`, a name the code uses
+  for something else; it is `InstallSource`, as in the server.
 
 ## [0.4.1]
 
