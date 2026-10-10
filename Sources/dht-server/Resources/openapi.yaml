@@ -286,21 +286,21 @@ components:
 
     # ───────────────────────────── Assets ────────────────────────────
 
-    AssetSource:
+    InstallSource:
       description: |
         Discriminated union of install sources, keyed on `type`. The
         server accepts exactly two source types: `catalog` and
         `local_file`. There is no HuggingFace or URL source.
       oneOf:
-        - $ref: '#/components/schemas/AssetSourceCatalog'
-        - $ref: '#/components/schemas/AssetSourceLocalFile'
+        - $ref: '#/components/schemas/InstallSourceCatalog'
+        - $ref: '#/components/schemas/InstallSourceLocalFile'
       discriminator:
         propertyName: type
         mapping:
-          catalog:     '#/components/schemas/AssetSourceCatalog'
-          local_file:  '#/components/schemas/AssetSourceLocalFile'
+          catalog:     '#/components/schemas/InstallSourceCatalog'
+          local_file:  '#/components/schemas/InstallSourceLocalFile'
 
-    AssetSourceCatalog:
+    InstallSourceCatalog:
       type: object
       required: [type, model]
       properties:
@@ -311,7 +311,7 @@ components:
         missing files. Base models only — the catalogue resolver does
         not cover LoRA / ControlNet / etc.
 
-    AssetSourceLocalFile:
+    InstallSourceLocalFile:
       type: object
       required: [type, asset_type, path]
       properties:
@@ -586,7 +586,7 @@ components:
       type: object
       required: [source]
       properties:
-        source: { $ref: '#/components/schemas/AssetSource' }
+        source: { $ref: '#/components/schemas/InstallSource' }
         confirm_large_download:
           type: boolean
           default: false
