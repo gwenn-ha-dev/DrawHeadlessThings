@@ -7,6 +7,42 @@ reaches 1.0. Pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-10-21
+
+### Changed
+
+- **Engine bump: draw-things-community `bc3970c` → `6c1dd09`** (2026-08-14 →
+  2026-10-20, 184 commits). Brings MiniMax H3, Qwen Image 2.1, FLUX.3 [klein]
+  and MOSS Image, plus engine fixes (TCD crash, Krea 2 2K decoding, MoE
+  streaming load, Z Image Base with quantized attention, Anima scale-out).
+  `GET /v1/info` reports `draw-things-community@6c1dd09`.
+- **s4nnc / ccv follow the engine's own pins** (`b5476a7` → ccv `69b1ed1`).
+  The re-pin to ccv `0e61707` (Z-Image Turbo blue-blob workaround) is gone;
+  `dtc-products.patch` now only exposes the `ModelZoo` and `Downloader`
+  products, the importer / encoder facades and a headless preview fallback.
+
+### Added
+
+- `Architecture` values `qwen_image_2.1`, `flux3_5b`, `minimax_h3`,
+  `moss_image`; `Modifier` values `fl2va`, `ref2va`.
+- Capability-map classes and cells for the new models:
+  - `qwenImage21`: txt2img, img2img; edit with modifier `kontext`.
+  - `flux3`: txt2img, img2img; edit with modifier `kontext` (what the engine
+    importer assigns). `flow_match.resolution_dependent_shift` is a silent
+    drop.
+  - `mossImage`: txt2img, img2img (the engine has no reference-edit path).
+  - `minimaxH3` (video): txt2vid; img2vid with `fl2va` (first frame) and
+    `ref2va` (subject reference). The engine also generates an audio track,
+    which DHT does not return yet; the last frame, extra references and
+    reference audio are not exposed either.
+
+### Fixed
+
+- The new engine decodes live previews through CoreML tiny decoders on macOS
+  too, unpacking archives only the Draw Things app bundles: the first preview
+  of a generation crashed `dht-server`. `dtc-products.patch` makes a missing
+  archive fall back to the latent-to-RGB preview, as before.
+
 ## [0.4.2] — 2026-10-10
 
 ### Changed
