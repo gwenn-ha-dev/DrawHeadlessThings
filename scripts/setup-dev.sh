@@ -16,11 +16,13 @@
 #   4. exposes `Downloader` as a library product (community-catalog fetch +
 #      file-size metadata) and makes the four `communityOnDisk` catalog
 #      arrays public so the server can label community-origin assets;
-#   5. re-pins s4nnc → 5a84c2e / ccv → 0e61707 in the clone's Package.swift.
-#      The revisions the engine pins (s4nnc 349a4d9 → ccv 9008b47) ship four
-#      Metal-kernel commits that break Z-Image Turbo denoising here (blue
-#      square blobs on every image); 5a84c2e is the same s4nnc source one
-#      deps-pin earlier. Revisit at the next engine bump.
+#   5. turns the forced lookups of the CoreML tiny-decoder archives
+#      (`*_tae.zip`, bundled only by the Draw Things app) into a `nil`
+#      return, so live previews fall back to the latent-to-RGB path instead
+#      of crashing a headless binary.
+#
+# The patch no longer touches the engine's s4nnc / ccv pins: DHT follows the
+# revisions the engine itself resolves.
 #
 # The patch lives only in the local clone — it is never pushed upstream.
 # When the pinned SHA is bumped, re-run this script; if Package.swift has
@@ -28,7 +30,7 @@
 
 set -euo pipefail
 
-PINNED_SHA="bc3970cd24568d71e1d6a1543658fae54c136307"
+PINNED_SHA="6c1dd09303cde8e23b18d1f1e57894a559a498db"
 REPO_URL="https://github.com/drawthingsai/draw-things-community.git"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

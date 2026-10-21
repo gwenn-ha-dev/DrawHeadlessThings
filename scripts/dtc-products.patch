@@ -1,5 +1,5 @@
 diff --git a/Libraries/Downloader/Sources/ControlNetZoo+Downloads.swift b/Libraries/Downloader/Sources/ControlNetZoo+Downloads.swift
-index 77b6a2b..b3c9977 100644
+index 77b6a2b4..b3c9977a 100644
 --- a/Libraries/Downloader/Sources/ControlNetZoo+Downloads.swift
 +++ b/Libraries/Downloader/Sources/ControlNetZoo+Downloads.swift
 @@ -96,7 +96,9 @@ extension ControlNetZoo {
@@ -14,7 +14,7 @@ index 77b6a2b..b3c9977 100644
    public static var community: [Specification] = {
      let availableModels = Set(
 diff --git a/Libraries/Downloader/Sources/LoRAZoo+Downloads.swift b/Libraries/Downloader/Sources/LoRAZoo+Downloads.swift
-index bcf1ec5..c994c48 100644
+index bcf1ec50..c994c480 100644
 --- a/Libraries/Downloader/Sources/LoRAZoo+Downloads.swift
 +++ b/Libraries/Downloader/Sources/LoRAZoo+Downloads.swift
 @@ -95,7 +95,9 @@ extension LoRAZoo {
@@ -29,7 +29,7 @@ index bcf1ec5..c994c48 100644
    public static var community: [Specification] = {
      let availableModels = Set(
 diff --git a/Libraries/Downloader/Sources/ModelZoo+Downloads.swift b/Libraries/Downloader/Sources/ModelZoo+Downloads.swift
-index 9cd4856..94fa722 100644
+index 9cd48561..94fa722e 100644
 --- a/Libraries/Downloader/Sources/ModelZoo+Downloads.swift
 +++ b/Libraries/Downloader/Sources/ModelZoo+Downloads.swift
 @@ -297,7 +297,9 @@ extension ModelZoo {
@@ -44,7 +44,7 @@ index 9cd4856..94fa722 100644
    public static var uncuratedCommunityOnDisk: [Specification] = uncuratedCommunityFromDisk()
  
 diff --git a/Libraries/Downloader/Sources/TextualInversionZoo+Downloads.swift b/Libraries/Downloader/Sources/TextualInversionZoo+Downloads.swift
-index 238bb99..f9e4969 100644
+index 238bb998..f9e4969b 100644
 --- a/Libraries/Downloader/Sources/TextualInversionZoo+Downloads.swift
 +++ b/Libraries/Downloader/Sources/TextualInversionZoo+Downloads.swift
 @@ -101,7 +101,9 @@ extension TextualInversionZoo {
@@ -58,9 +58,149 @@ index 238bb99..f9e4969 100644
  
    public static var community: [Specification] = {
      let availableModels = Set(
+diff --git a/Libraries/LocalImageGenerator/Sources/ImageConverter+CoreML.swift b/Libraries/LocalImageGenerator/Sources/ImageConverter+CoreML.swift
+index d295a81a..8cd3099f 100644
+--- a/Libraries/LocalImageGenerator/Sources/ImageConverter+CoreML.swift
++++ b/Libraries/LocalImageGenerator/Sources/ImageConverter+CoreML.swift
+@@ -18,10 +18,12 @@ import Foundation
+         else {
+           return coreMLUrl.appendingPathComponent("flux_1_tae")
+         }
+-        try fileManager.unzipItem(
+-          at: Bundle.main.url(
+-            forResource: "flux_1_tae", withExtension: "zip")!,
+-          to: coreMLUrl)
++        // DrawHeadlessThings: a headless build ships no TAE archive; return
++        // nil so previews fall back to the latent-to-RGB path.
++        guard
++          let archiveUrl = Bundle.main.url(forResource: "flux_1_tae", withExtension: "zip")
++        else { return nil }
++        try fileManager.unzipItem(at: archiveUrl, to: coreMLUrl)
+         do {
+           try fileManager.linkItem(
+             at: coreMLUrl.appendingPathComponent("flux_1_tae/weight.bin"),
+@@ -87,10 +89,12 @@ import Foundation
+         else {
+           return coreMLUrl.appendingPathComponent("sd_tae")
+         }
+-        try fileManager.unzipItem(
+-          at: Bundle.main.url(
+-            forResource: "sd_tae", withExtension: "zip")!,
+-          to: coreMLUrl)
++        // DrawHeadlessThings: a headless build ships no TAE archive; return
++        // nil so previews fall back to the latent-to-RGB path.
++        guard
++          let archiveUrl = Bundle.main.url(forResource: "sd_tae", withExtension: "zip")
++        else { return nil }
++        try fileManager.unzipItem(at: archiveUrl, to: coreMLUrl)
+         do {
+           try fileManager.linkItem(
+             at: coreMLUrl.appendingPathComponent("sd_tae/weight.bin"),
+@@ -156,10 +160,12 @@ import Foundation
+         else {
+           return coreMLUrl.appendingPathComponent("sd3_tae")
+         }
+-        try fileManager.unzipItem(
+-          at: Bundle.main.url(
+-            forResource: "sd3_tae", withExtension: "zip")!,
+-          to: coreMLUrl)
++        // DrawHeadlessThings: a headless build ships no TAE archive; return
++        // nil so previews fall back to the latent-to-RGB path.
++        guard
++          let archiveUrl = Bundle.main.url(forResource: "sd3_tae", withExtension: "zip")
++        else { return nil }
++        try fileManager.unzipItem(at: archiveUrl, to: coreMLUrl)
+         do {
+           try fileManager.linkItem(
+             at: coreMLUrl.appendingPathComponent("sd3_tae/weight.bin"),
+@@ -225,10 +231,12 @@ import Foundation
+         else {
+           return coreMLUrl.appendingPathComponent("sdxl_tae")
+         }
+-        try fileManager.unzipItem(
+-          at: Bundle.main.url(
+-            forResource: "sdxl_tae", withExtension: "zip")!,
+-          to: coreMLUrl)
++        // DrawHeadlessThings: a headless build ships no TAE archive; return
++        // nil so previews fall back to the latent-to-RGB path.
++        guard
++          let archiveUrl = Bundle.main.url(forResource: "sdxl_tae", withExtension: "zip")
++        else { return nil }
++        try fileManager.unzipItem(at: archiveUrl, to: coreMLUrl)
+         do {
+           try fileManager.linkItem(
+             at: coreMLUrl.appendingPathComponent("sdxl_tae/weight.bin"),
+@@ -295,10 +303,12 @@ import Foundation
+         else {
+           return coreMLUrl.appendingPathComponent("qwenimage_tae")
+         }
+-        try fileManager.unzipItem(
+-          at: Bundle.main.url(
+-            forResource: "qwenimage_tae", withExtension: "zip")!,
+-          to: coreMLUrl)
++        // DrawHeadlessThings: a headless build ships no TAE archive; return
++        // nil so previews fall back to the latent-to-RGB path.
++        guard
++          let archiveUrl = Bundle.main.url(forResource: "qwenimage_tae", withExtension: "zip")
++        else { return nil }
++        try fileManager.unzipItem(at: archiveUrl, to: coreMLUrl)
+         do {
+           try fileManager.linkItem(
+             at: coreMLUrl.appendingPathComponent("qwenimage_tae/weight.bin"),
+@@ -468,10 +478,12 @@ import Foundation
+         else {
+           return coreMLUrl.appendingPathComponent("flux_2_tae")
+         }
+-        try fileManager.unzipItem(
+-          at: Bundle.main.url(
+-            forResource: "flux_2_tae", withExtension: "zip")!,
+-          to: coreMLUrl)
++        // DrawHeadlessThings: a headless build ships no TAE archive; return
++        // nil so previews fall back to the latent-to-RGB path.
++        guard
++          let archiveUrl = Bundle.main.url(forResource: "flux_2_tae", withExtension: "zip")
++        else { return nil }
++        try fileManager.unzipItem(at: archiveUrl, to: coreMLUrl)
+         do {
+           try fileManager.linkItem(
+             at: coreMLUrl.appendingPathComponent("flux_2_tae/weight.bin"),
+@@ -569,10 +581,12 @@ import Foundation
+         else {
+           return coreMLUrl.appendingPathComponent("ltx_2_tae")
+         }
+-        try fileManager.unzipItem(
+-          at: Bundle.main.url(
+-            forResource: "ltx_2_tae", withExtension: "zip")!,
+-          to: coreMLUrl)
++        // DrawHeadlessThings: a headless build ships no TAE archive; return
++        // nil so previews fall back to the latent-to-RGB path.
++        guard
++          let archiveUrl = Bundle.main.url(forResource: "ltx_2_tae", withExtension: "zip")
++        else { return nil }
++        try fileManager.unzipItem(at: archiveUrl, to: coreMLUrl)
+         do {
+           try fileManager.linkItem(
+             at: coreMLUrl.appendingPathComponent("ltx_2_tae/weight.bin"),
+@@ -638,10 +652,12 @@ import Foundation
+         else {
+           return coreMLUrl.appendingPathComponent("ltx_2.3_tae")
+         }
+-        try fileManager.unzipItem(
+-          at: Bundle.main.url(
+-            forResource: "ltx_2.3_tae", withExtension: "zip")!,
+-          to: coreMLUrl)
++        // DrawHeadlessThings: a headless build ships no TAE archive; return
++        // nil so previews fall back to the latent-to-RGB path.
++        guard
++          let archiveUrl = Bundle.main.url(forResource: "ltx_2.3_tae", withExtension: "zip")
++        else { return nil }
++        try fileManager.unzipItem(at: archiveUrl, to: coreMLUrl)
+         do {
+           try fileManager.linkItem(
+             at: coreMLUrl.appendingPathComponent("ltx_2.3_tae/weight.bin"),
 diff --git a/Libraries/MediaGenerationKit/Sources/BaseModelImporter.swift b/Libraries/MediaGenerationKit/Sources/BaseModelImporter.swift
 new file mode 100644
-index 0000000..bf50c54
+index 00000000..bf50c541
 --- /dev/null
 +++ b/Libraries/MediaGenerationKit/Sources/BaseModelImporter.swift
 @@ -0,0 +1,206 @@
@@ -271,7 +411,7 @@ index 0000000..bf50c54
 +  }
 +}
 diff --git a/Libraries/MediaGenerationKit/Sources/MediaGenerationPipeline.swift b/Libraries/MediaGenerationKit/Sources/MediaGenerationPipeline.swift
-index 1ceabf7..a8dde88 100644
+index 1ceabf7d..a8dde88c 100644
 --- a/Libraries/MediaGenerationKit/Sources/MediaGenerationPipeline.swift
 +++ b/Libraries/MediaGenerationKit/Sources/MediaGenerationPipeline.swift
 @@ -659,6 +659,13 @@ public struct MediaGenerationPipeline: Sendable {
@@ -288,11 +428,30 @@ index 1ceabf7..a8dde88 100644
    }
  
    internal final class Storage: @unchecked Sendable {
+diff --git a/Package.resolved b/Package.resolved
+index b8854a8f..08136a0d 100644
+--- a/Package.resolved
++++ b/Package.resolved
+@@ -33,14 +33,6 @@
+         "version" : "1.27.2"
+       }
+     },
+-    {
+-      "identity" : "lottie-ios",
+-      "kind" : "remoteSourceControl",
+-      "location" : "https://github.com/airbnb/lottie-ios.git",
+-      "state" : {
+-        "revision" : "a004050748dc197c56256a14dca49a035d74726c"
+-      }
+-    },
+     {
+       "identity" : "s4nnc",
+       "kind" : "remoteSourceControl",
 diff --git a/Package.swift b/Package.swift
-index 45140b8..6310203 100644
+index cde63ca0..28a303e4 100644
 --- a/Package.swift
 +++ b/Package.swift
-@@ -9,14 +9,22 @@ let package = Package(
+@@ -9,6 +9,14 @@ let package = Package(
      .executable(name: "gRPCServerCLI", targets: ["gRPCServerCLI"]),
      .executable(name: "draw-things-cli", targets: ["DrawThingsCLI"]),
      .library(name: "_MediaGenerationKit", targets: ["_MediaGenerationKit"]),
@@ -307,13 +466,3 @@ index 45140b8..6310203 100644
    ],
    dependencies: [
      .package(
--      url: "https://github.com/liuliu/ccv.git", revision: "9008b4785fc0bb9a05212c9aff8dc2f6abfbe814"
-+      url: "https://github.com/liuliu/ccv.git", revision: "0e61707ff9f365dee2d51ff445ca21dc23255473"
-     ),
-     .package(
-       url: "https://github.com/liuliu/s4nnc.git",
--      revision: "349a4d9fcdda282307fc12543f4e615beef5d335"),
-+      revision: "5a84c2e98e44a569c9ab97bb1b281adfd171122d"),
-     .package(
-       url: "https://github.com/liuliu/dflat.git",
-       revision: "73925e51e4f44add842177a229f9990cb13711ff"),
