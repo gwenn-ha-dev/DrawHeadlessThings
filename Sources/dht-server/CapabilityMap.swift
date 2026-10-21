@@ -20,6 +20,8 @@ enum Modifier: String, Codable, Sendable, CaseIterable, Hashable {
   case qwenimageLayered = "qwenimage_layered"
   case qwenimageEdit2511 = "qwenimage_edit_2511"
   case kontextKv = "kontext_kv"
+  case fl2va
+  case ref2va
 
   /// Resolves the modifier from a spec's `modifier?.rawValue`. A `nil`
   /// modifier or unknown raw string maps to `.none` (vanilla T2I).
@@ -45,21 +47,25 @@ enum Operation: String, Codable, Sendable, CaseIterable {
 
 /// Quotient over `Architecture` (SDK `ModelVersion`) that groups variants
 /// branching alike in the SDK switches. The capability map is keyed on
-/// `(BehaviorClass, SamplerModifier)` — 24 image+video classes vs 34 raw
+/// `(BehaviorClass, SamplerModifier)` — 28 image+video classes vs 38 raw
 /// architectures. Adding a new `ModelVersion` upstream surfaces as a
 /// compile-time error on `Architecture.behaviorClass`, not as silent drift.
 enum BehaviorClass: String, Codable, Sendable, CaseIterable {
-  // Image (18)
+  // Image (21)
   case sd1x, kandinsky21, sdxl, stableCascade, sd3
   case pixart, auraflow, flux1, flux2, hidream
   case qwenImage, zImage, ernieImage, cosmos2, seedvr2
   // hiDream-O1 branches apart from hiDream-I1 in the SDK switches
   // (e.g. padded text-encoding length), hence its own class.
   case hidreamO1, ideogram4, krea2
+  // Qwen Image 2.1 and FLUX.3 [klein] share little with Qwen Image / FLUX.2
+  // beyond generic groupings: own tokenizer, text encoder and fixed encoder
+  // branches, hence their own classes.
+  case qwenImage21, flux3, mossImage
 
-  // Video (6)
+  // Video (7)
   case svdI2v, hunyuanVideo, wan21, wan22, ltx2
-  case longcatAvatar
+  case longcatAvatar, minimaxH3
 }
 
 extension Architecture {
@@ -81,12 +87,15 @@ extension Architecture {
     case .auraflow: return .auraflow
     case .flux1: return .flux1
     case .flux2, .flux2_9b, .flux2_4b: return .flux2
+    case .flux3_5b: return .flux3
+    case .mossImage: return .mossImage
     case .hiDreamI1: return .hidream
     case .hiDreamO1: return .hidreamO1
     case .ideogram4: return .ideogram4
     case .krea2: return .krea2
     case .longcatVideoAvatar1_5: return .longcatAvatar
     case .qwenImage: return .qwenImage
+    case .qwenImage2_1: return .qwenImage21
     case .zImage: return .zImage
     case .ernieImage: return .ernieImage
     case .cosmos2_5_2b: return .cosmos2
@@ -96,6 +105,7 @@ extension Architecture {
     case .wan21_1_3b, .wan21_14b: return .wan21
     case .wan22_5b: return .wan22
     case .ltx2, .ltx2_3: return .ltx2
+    case .minimaxH3: return .minimaxH3
     }
   }
 }

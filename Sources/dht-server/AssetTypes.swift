@@ -25,12 +25,14 @@ enum Architecture: String, Codable, Sendable, CaseIterable {
   case wan21_14b = "wan_v2.1_14b"
   case hiDreamI1 = "hidream_i1"
   case qwenImage = "qwen_image"
+  case qwenImage2_1 = "qwen_image_2.1"
   case wan22_5b = "wan_v2.2_5b"
   case zImage = "z_image"
   case ernieImage = "ernie_image"
   case flux2
   case flux2_9b
   case flux2_4b
+  case flux3_5b
   case cosmos2_5_2b = "cosmos2.5_2b"
   case ltx2
   case ltx2_3 = "ltx2.3"
@@ -40,6 +42,8 @@ enum Architecture: String, Codable, Sendable, CaseIterable {
   case ideogram4 = "ideogram_4"
   case krea2 = "krea_2"
   case longcatVideoAvatar1_5 = "longcat_video_avatar_v1.5"
+  case minimaxH3 = "minimax_h3"
+  case mossImage = "moss_image"
 
   /// Truth source: `ImageGeneratorUtils.isVideoModel` in the SDK
   /// (`Libraries/ImageGenerator/Sources/ImageGeneratorUtils.swift:180`).
@@ -48,7 +52,7 @@ enum Architecture: String, Codable, Sendable, CaseIterable {
   var domain: Domain {
     switch self {
     case .svdI2v, .hunyuanVideo, .wan21_1_3b, .wan21_14b, .wan22_5b,
-      .ltx2, .ltx2_3, .longcatVideoAvatar1_5:
+      .ltx2, .ltx2_3, .longcatVideoAvatar1_5, .minimaxH3:
       return .video
     default:
       return .image

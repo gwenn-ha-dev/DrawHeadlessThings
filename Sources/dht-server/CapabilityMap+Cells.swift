@@ -958,6 +958,119 @@ let capabilityCells: [CapabilityMap.Key: [Operation: ContractTemplate]] = [
       notes: ["Krea 2 img2img renoise."]),
   ],
 
+  // Qwen Image 2.1 — own Qwen3-VL text encoder, 64-channel latents and alpha
+  // decoder; shares little with Qwen Image beyond generic groupings.
+  .init(behaviorClass: .qwenImage21, modifier: .none): [
+    .txt2img: ContractTemplate(
+      accepted: merging(
+        FieldBundle.universalImageScalars,
+        FieldBundle.commonImageSubObjects,
+        modernRfExtraSubObjects),
+      silentDrops: modernRfNoClipImageDrops,
+      notes: [
+        "Qwen Image 2.1. Flow matching; Qwen3-VL text encoder (no CLIP). Decodes with an alpha channel. Engine CLI defaults: 40 steps, cfg 1, resolution-dependent shift on.",
+      ]),
+    .img2img: ContractTemplate(
+      accepted: merging(
+        FieldBundle.universalImageScalars,
+        FieldBundle.commonImageSubObjects,
+        modernRfExtraSubObjects,
+        img2imgExtras),
+      silentDrops: modernRfNoClipImageDrops,
+      notes: ["Qwen Image 2.1 img2img renoise."]),
+  ],
+
+  // Qwen Image 2.1 with modifier=.kontext (from a custom spec or LoRA): the
+  // engine encodes reference images through the Qwen3-VL vision tower.
+  .init(behaviorClass: .qwenImage21, modifier: .kontext): [
+    .edit: ContractTemplate(
+      accepted: merging(
+        FieldBundle.universalImageScalars,
+        merging(["loras": F.loras, "upscaler": F.upscaler], [:]),
+        modernRfExtraSubObjects,
+        merging(instructionEditExtras, ["reference_image": F.referenceImage])),
+      silentDrops: modernRfNoClipImageDrops + [
+        SilentDrop(field: "controlnets", reason: "Kontext edit path does not engage controlnets"),
+        SilentDrop(field: "depth_image", reason: "Not used in the Kontext edit path"),
+      ],
+      notes: [
+        "Qwen Image 2.1 instruction-edit. Each reference image is inserted in the prompt as its own vision block. No catalog spec ships this modifier; it comes from a custom spec or a LoRA.",
+      ]),
+  ],
+
+  // FLUX.3 [klein] 5B — own Qwen3 text encoder branch, no resolution-
+  // dependent shift (unlike FLUX.2 4B), optional flow-map conditioning.
+  .init(behaviorClass: .flux3, modifier: .none): [
+    .txt2img: ContractTemplate(
+      accepted: merging(
+        FieldBundle.universalImageScalars,
+        FieldBundle.commonImageSubObjects,
+        modernRfExtraSubObjects),
+      silentDrops: modernRfNoClipImageDrops + [
+        SilentDrop(
+          field: "flow_match.resolution_dependent_shift",
+          reason: "FLUX.3 is not resolution-dependent-shift capable engine-side"),
+      ],
+      notes: [
+        "FLUX.3 [klein] 5B. Flow matching; Qwen3 text encoder (no CLIP). Checkpoints with a next-time embedder run as flow-map models.",
+      ]),
+    .img2img: ContractTemplate(
+      accepted: merging(
+        FieldBundle.universalImageScalars,
+        FieldBundle.commonImageSubObjects,
+        modernRfExtraSubObjects,
+        img2imgExtras),
+      silentDrops: modernRfNoClipImageDrops + [
+        SilentDrop(
+          field: "flow_match.resolution_dependent_shift",
+          reason: "FLUX.3 is not resolution-dependent-shift capable engine-side"),
+      ],
+      notes: ["FLUX.3 [klein] img2img renoise."]),
+  ],
+
+  // FLUX.3 [klein] with modifier=.kontext — what the engine importer assigns
+  // to imported FLUX.3 checkpoints. Shares the FLUX.2 reference branch.
+  .init(behaviorClass: .flux3, modifier: .kontext): [
+    .edit: ContractTemplate(
+      accepted: merging(
+        FieldBundle.universalImageScalars,
+        merging(["loras": F.loras, "upscaler": F.upscaler], [:]),
+        modernRfExtraSubObjects,
+        merging(instructionEditExtras, ["reference_image": F.referenceImage])),
+      silentDrops: modernRfNoClipImageDrops + [
+        SilentDrop(field: "controlnets", reason: "Kontext edit path does not engage controlnets"),
+        SilentDrop(field: "depth_image", reason: "Not used in the Kontext edit path"),
+        SilentDrop(
+          field: "flow_match.resolution_dependent_shift",
+          reason: "FLUX.3 is not resolution-dependent-shift capable engine-side"),
+      ],
+      notes: [
+        "FLUX.3 [klein] instruction-edit. Same wire as FLUX.2 Kontext.",
+      ]),
+  ],
+
+  // MOSS Image (SFT / Base) — own DiT on the FLUX.2 VAE. The engine
+  // explicitly returns no reference encoding for it, hence no edit cell.
+  .init(behaviorClass: .mossImage, modifier: .none): [
+    .txt2img: ContractTemplate(
+      accepted: merging(
+        FieldBundle.universalImageScalars,
+        FieldBundle.commonImageSubObjects,
+        modernRfExtraSubObjects),
+      silentDrops: modernRfNoClipImageDrops,
+      notes: [
+        "MOSS Image (SFT / Base). Flow matching; Qwen3.5 9B text encoder (no CLIP), FLUX.2 VAE. Catalog note recommends 50 steps, cfg 3, shift 5.",
+      ]),
+    .img2img: ContractTemplate(
+      accepted: merging(
+        FieldBundle.universalImageScalars,
+        FieldBundle.commonImageSubObjects,
+        modernRfExtraSubObjects,
+        img2imgExtras),
+      silentDrops: modernRfNoClipImageDrops,
+      notes: ["MOSS Image img2img renoise."]),
+  ],
+
   // =====================================================================
   // SeedVR2 — image super-resolution / restoration (new op)
   // =====================================================================
@@ -1184,6 +1297,67 @@ let capabilityCells: [CapabilityMap.Key: [Operation: ContractTemplate]] = [
       ],
       notes: [
         "LongCat Video Avatar 1.5 img2vid. conditioning_image is the avatar frame. The upstream audio-conditioning input (talking-head driving audio) is NOT exposed by the DHT API in v0 — generation runs without audio.",
+      ]),
+  ],
+
+  // MiniMax H3 — joint video + audio generation. DHT encodes the video track
+  // only: the generated audio is not muxed, and audio input (ref2va) is not
+  // exposed. Real image conditioning comes from the fl2va / ref2va modifiers;
+  // with modifier=.none an init image would only be replicated across frames,
+  // hence txt2vid only.
+  .init(behaviorClass: .minimaxH3, modifier: .none): [
+    .txt2vid: ContractTemplate(
+      accepted: merging(
+        FieldBundle.universalImageScalars,
+        FieldBundle.videoExtras,
+        ["loras": F.loras, "upscaler": F.upscaler],
+        ["flow_match": F.flowMatch]),
+      silentDrops: videoDrops + [
+        Drops.clipSkipOnNonClip,
+        SilentDrop(field: "controlnets", reason: "Video archs don't engage ControlNet"),
+        SilentDrop(field: "reference_image", reason: "Not used for txt2vid"),
+        SilentDrop(field: "depth_image", reason: "Not used"),
+      ],
+      notes: [
+        "MiniMax H3 txt2vid, 24 fps. Flow matching; Qwen3 text encoder (no CLIP). The engine also generates an audio track, which DHT does not return (video only). Engine CLI defaults: 50 steps, cfg 1, shift 12.",
+      ]),
+  ],
+
+  // MiniMax H3 first/last-frame to video (modifier='fl2va').
+  .init(behaviorClass: .minimaxH3, modifier: .fl2va): [
+    .img2vid: ContractTemplate(
+      accepted: merging(
+        FieldBundle.universalImageScalars,
+        FieldBundle.videoExtras,
+        merging(["loras": F.loras, "upscaler": F.upscaler], img2vidExtras),
+        ["flow_match": F.flowMatch]),
+      silentDrops: videoDrops + [
+        Drops.clipSkipOnNonClip,
+        SilentDrop(field: "controlnets", reason: "Video archs don't engage ControlNet"),
+        SilentDrop(field: "reference_image", reason: "Use conditioning_image for the first frame"),
+        SilentDrop(field: "depth_image", reason: "Not used"),
+      ],
+      notes: [
+        "MiniMax H3 FL2VA. conditioning_image is the first frame. The engine's optional last frame (first moodboard image) is not exposed by the DHT API in v0. Audio track not returned.",
+      ]),
+  ],
+
+  // MiniMax H3 reference to video (modifier='ref2va').
+  .init(behaviorClass: .minimaxH3, modifier: .ref2va): [
+    .img2vid: ContractTemplate(
+      accepted: merging(
+        FieldBundle.universalImageScalars,
+        FieldBundle.videoExtras,
+        merging(["loras": F.loras, "upscaler": F.upscaler], img2vidExtras),
+        ["flow_match": F.flowMatch]),
+      silentDrops: videoDrops + [
+        Drops.clipSkipOnNonClip,
+        SilentDrop(field: "controlnets", reason: "Video archs don't engage ControlNet"),
+        SilentDrop(field: "reference_image", reason: "Use conditioning_image for the reference"),
+        SilentDrop(field: "depth_image", reason: "Not used"),
+      ],
+      notes: [
+        "MiniMax H3 REF2VA. conditioning_image is a subject reference, not a first frame. Extra reference images and reference audio are not exposed by the DHT API in v0. Audio track not returned.",
       ]),
   ],
 ]
