@@ -4,8 +4,8 @@
 #
 # Ad-hoc signed (`codesign --sign -`): fine for your own machines. It is
 # NOT notarized, so a DMG opened on someone else's Mac would be blocked by
-# Gatekeeper. Distributing externally would need a Developer ID certificate
-# and a notarytool pass added after the signing step below.
+# Gatekeeper. scripts/notarize.sh runs this script, then re-signs the app
+# with a Developer ID and notarizes both the app and the DMG.
 #
 # Usage:  ./scripts/make-app.sh
 # Output: output/DHTServer.app  and  output/DHTServer-<version>.dmg
@@ -31,9 +31,13 @@ DMG_STAGE="${ROOT}/.build/dmg-stage"
 VERSION="$(sed -nE 's/.*let dhtAPIVersion = "([0-9.]+)".*/\1/p' Sources/dht-server/DHTServer.swift)"
 [ -n "$VERSION" ] || { echo "could not read dhtAPIVersion"; exit 1; }
 
+# Extra `swift build` flags, split on spaces. scripts/notarize.sh passes
+# path remapping, so a distributed binary does not carry the build path.
+read -r -a EXTRA_FLAGS <<< "${DHT_SWIFT_BUILD_FLAGS:-}"
+
 echo "==> Building dht-server + dht-menubar (${CONFIG})…"
-swift build -c "${CONFIG}" --product dht-server
-swift build -c "${CONFIG}" --product dht-menubar
+swift build -c "${CONFIG}" ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"} --product dht-server
+swift build -c "${CONFIG}" ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"} --product dht-menubar
 
 echo "==> Assembling ${APP_NAME}.app (v${VERSION})…"
 rm -rf "${APP}"

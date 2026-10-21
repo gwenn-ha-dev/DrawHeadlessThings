@@ -8,7 +8,7 @@ import _MediaGenerationKit
 /// Pinned engine commit. Bumped when we re-resolve the `draw-things-community`
 /// dependency in `Package.swift` / `Package.resolved`. Surfaced via
 /// `/v1/info` and on every generation response's `RunMetadata`.
-let dhtEngineVersion = "draw-things-community@bc3970c"
+let dhtEngineVersion = "draw-things-community@6c1dd09"
 
 /// Per-step progress callback shared by every generation method. Called with
 /// `(step, totalSteps, previewPNG)` for each diffusion step the engine emits
